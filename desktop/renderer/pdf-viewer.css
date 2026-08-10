@@ -1,0 +1,26 @@
+.pdf-viewer{height:calc(100% - 59px);display:flex;flex-direction:column;background:var(--bubble)}
+.pdf-toolbar{min-height:62px;display:flex;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--surface);position:sticky;top:59px;z-index:20}
+.pdf-toolbar-group{display:flex;align-items:center;gap:7px;color:var(--muted)}
+.pdf-toolbar-group:nth-of-type(1){margin-left:auto}
+.pdf-icon-button{width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer}
+.pdf-icon-button:hover{background:var(--hover)}
+.pdf-page-input{width:58px;height:34px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);font:inherit;text-align:center}
+.pdf-zoom-hint{color:var(--muted);font-size:12px;white-space:nowrap}
+.pdf-stage{flex:1;overflow:auto;padding:28px;scroll-behavior:smooth;position:relative;z-index:0;isolation:isolate}
+.pdf-pages{display:flex;flex-direction:column;align-items:center;gap:24px;min-width:max-content}
+.pdf-pages.two-page{display:grid;grid-template-columns:repeat(2,max-content);align-items:start;justify-content:center;gap:24px}
+.pdf-pages.two-page .pdf-page-shell{min-width:0}
+.pdf-page-shell{position:relative;min-height:900px;min-width:620px;display:flex;align-items:flex-start;justify-content:center;background:#fff;box-shadow:0 8px 28px rgba(18,32,43,.24)}
+.pdf-page-shell canvas{display:block;background:#fff}
+.textLayer{color-scheme:only light;position:absolute;text-align:initial;inset:0;overflow:clip;opacity:1;line-height:1;letter-spacing:normal;word-spacing:normal;-webkit-text-size-adjust:none;text-size-adjust:none;forced-color-adjust:none;transform-origin:0 0;caret-color:transparent;z-index:2;user-select:text;--min-font-size:1;--text-scale-factor:calc(var(--total-scale-factor) * var(--min-font-size));--min-font-size-inv:calc(1 / var(--min-font-size))}
+.textLayer :is(span,br){color:transparent;position:absolute;white-space:pre;cursor:text;transform-origin:0 0;user-select:text}
+.textLayer>:not(.markedContent),.textLayer .markedContent span:not(.markedContent){z-index:1;--font-height:0;font-size:calc(var(--text-scale-factor) * var(--font-height));--scale-x:1;--rotate:0deg;transform:rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv))}
+.textLayer .markedContent{display:contents}
+.textLayer ::selection{background:rgba(40,143,229,.32);color:transparent}
+.pdf-page-label{position:absolute;right:10px;bottom:8px;padding:3px 7px;border-radius:5px;background:rgba(30,42,52,.7);color:#fff;font-size:11px;z-index:3;user-select:none;pointer-events:none}
+.pdf-status{margin:auto;color:var(--muted);font-size:16px}
+.pdf-layout-switch{display:flex;align-items:center;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--surface)}
+.pdf-layout-switch .pdf-icon-button{border:0;border-radius:0}
+.pdf-layout-switch .pdf-icon-button+.pdf-icon-button{border-left:1px solid var(--line)}
+.pdf-layout-switch .pdf-icon-button.active{background:var(--accent);color:#fff}
+@media(max-width:900px){.pdf-toolbar{flex-wrap:wrap}.pdf-toolbar-group:nth-of-type(1){margin-left:0}.pdf-stage{padding:14px}}

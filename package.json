@@ -1,0 +1,42 @@
+{
+  "name": "coda",
+  "version": "1.0.0",
+  "productName": "CoDA",
+  "description": "CoDA desktop workspace for codes, documents and architecture",
+  "main": "desktop/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^43.3.0",
+    "electron-builder": "^26.0.12"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^6.2.108",
+    "xlsx": "^0.18.5"
+  },
+  "build": {
+    "appId": "ua.coda.desktop",
+    "productName": "CoDA",
+    "asar": true,
+    "directories": { "output": "dist" },
+    "files": ["desktop/**/*", "package.json"],
+    "extraResources": [
+      { "from": "building_codes", "to": "building_codes" },
+      { "from": "data/dbn_catalog.xlsx", "to": "data/dbn_catalog.xlsx" },
+      { "from": "data/update_history.xlsx", "to": "data/update_history.xlsx" }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "artifactName": "CoDA-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CoDA"
+    }
+  }
+}

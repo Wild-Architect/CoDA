@@ -1,0 +1,19 @@
+.icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: middle;
+}
+
+.icon.small { width: 15px; height: 15px; flex-basis: 15px; }
+.icon.star { color: #e6ab28; fill: rgba(230,171,40,.12); }
+.primary-nav button,.sidebar-bottom button,.sidebar-list button,.button,.attachment,.notes-list button{display:flex;align-items:center;gap:9px}
+.top-icon,.window-controls button,.dialog-close{display:inline-flex;align-items:center;justify-content:center}
+.top-icon .icon{width:20px;height:20px}.window-controls .icon,.dialog-close .icon{width:17px;height:17px}
+.page-head .folder{display:inline-flex;color:var(--text)}.page-head .page-actions{display:inline-flex;margin-left:auto;color:var(--muted)}
+.pin .icon{display:block;margin:auto}

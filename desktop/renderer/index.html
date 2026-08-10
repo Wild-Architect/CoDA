@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CoDA</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="scale.css">
+  <link rel="stylesheet" href="edessb.css">
+  <link rel="stylesheet" href="icons.css">
+  <link rel="stylesheet" href="pdf-viewer.css">
+  <link rel="stylesheet" href="settings.css">
+  <link rel="stylesheet" href="notes-chat.css">
+</head>
+<body>
+  <header class="titlebar">
+    <button class="top-icon" id="toggle-sidebar" title="Сховати панель"><svg class="icon"><use href="icons.svg#panel-left"/></svg></button>
+    <button class="top-icon" id="nav-back" title="Назад" disabled><svg class="icon"><use href="icons.svg#chevron-left"/></svg></button>
+    <button class="top-icon" id="nav-forward" title="Вперед" disabled><svg class="icon"><use href="icons.svg#chevron-right"/></svg></button>
+    <div class="settings-menu" id="settings-menu">
+      <button id="settings-toggle">Налаштування <svg class="icon small"><use href="icons.svg#chevron-down"/></svg></button>
+      <div class="settings-dropdown" id="settings-dropdown" hidden>
+        <button id="settings-theme"><svg class="icon"><use id="settings-theme-icon" href="icons.svg#moon"/></svg><span id="settings-theme-label">Темна тема</span></button>
+        <button id="settings-admin"><svg class="icon"><use href="icons.svg#shield"/></svg><span>Адміністрування</span></button>
+        <button id="settings-about"><svg class="icon"><use href="icons.svg#info"/></svg><span>Про програму</span></button>
+        <button id="settings-updates"><svg class="icon"><use href="icons.svg#history"/></svg><span>Історія оновлень</span></button>
+      </div>
+    </div>
+    <div class="window-controls"><button id="minimize" title="Згорнути"><svg class="icon"><use href="icons.svg#minus"/></svg></button><button id="maximize" title="Розгорнути"><svg class="icon"><use href="icons.svg#square"/></svg></button><button id="close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button></div>
+  </header>
+  <div class="workspace">
+    <aside id="sidebar">
+      <div class="brand"><div class="brand-name">CoDA</div><div class="brand-tagline">Codes, Documents, Architecture</div></div>
+      <div class="primary-nav"><button data-page="dbn"><svg class="icon"><use href="icons.svg#book-open"/></svg><span>Державні будівельні норми</span></button><button data-page="notes"><svg class="icon"><use href="icons.svg#notebook-pen"/></svg><span>Нотатки</span></button><button data-page="excel"><svg class="icon"><use href="icons.svg#sheet"/></svg><span>Archicad / Excel</span></button></div>
+      <div id="side-lists"></div>
+      <div class="sidebar-bottom"><button id="check-database-update" class="database-check"><svg class="icon"><use href="icons.svg#refresh-cw"/></svg><span>Перевірити оновлення бази</span></button><div id="database-update" class="database-update"><span>Дата оновлення бази будівельних норм</span><strong>не вказана</strong></div></div>
+    </aside>
+    <main class="stage"><section class="surface"><div id="page"></div></section></main>
+  </div>
+  <dialog id="about"><button class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><h2>Про CoDA</h2><p>Локальний робочий простір для будівельних норм, документів і проєктування.</p><small>Версія 1.0 (Alya)</small></dialog>
+  <dialog id="updates" class="updates-dialog"><button class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><h2>Історія оновлень</h2><div id="updates-content"></div></dialog>
+  <dialog id="admin-dialog" class="admin-dialog"><button class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><div class="admin-heading"><div class="admin-icon"><svg class="icon"><use href="icons.svg#shield"/></svg></div><div><h2>Адміністрування</h2><p>Підготовка публічної бібліотеки нотаток</p></div></div><form id="admin-login-form" class="admin-form"><label>Логін<input id="admin-login" autocomplete="username" required></label><label>Пароль<input id="admin-password" type="password" autocomplete="current-password" required></label><p id="admin-login-error" class="form-error" hidden></p><button class="button primary" type="submit">Увійти</button></form><div id="admin-panel" hidden><div class="admin-fields"><label>Автор<input id="library-author" value="Alya"></label><label>Версія бібліотеки<input id="library-version" placeholder="2026.09.01.1"></label></div><div class="admin-notes-head"><strong>Нотатки для публікації</strong><button id="admin-select-all" class="text-button" type="button">Вибрати всі</button></div><div id="admin-notes-list" class="admin-notes-list"></div><p id="admin-export-status" class="admin-status"></p><div class="admin-actions"><button id="admin-logout" class="button" type="button">Вийти</button><button id="admin-export" class="button primary" type="button"><svg class="icon"><use href="icons.svg#library"/></svg>Вивантажити бібліотеку нотаток</button></div></div></dialog>
+  <dialog id="public-notes-update-dialog" class="update-dialog"><button class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><div class="update-dialog-icon"><svg class="icon"><use href="icons.svg#library"/></svg></div><h2 id="public-notes-update-title">Бібліотека нотаток</h2><p id="public-notes-update-message"></p><div class="update-dialog-actions"><button id="public-notes-update-cancel" class="button">Закрити</button><button id="public-notes-update-install" class="button primary" hidden>Оновити</button></div></dialog>
+  <dialog id="delete-confirm" class="confirm-dialog">
+    <div class="confirm-icon"><svg class="icon"><use href="icons.svg#trash"/></svg></div>
+    <div class="confirm-copy"><h2 id="delete-confirm-title">Підтвердження видалення</h2><p id="delete-confirm-message"></p></div>
+    <div class="confirm-actions"><button id="delete-confirm-cancel" class="button">Скасувати</button><button id="delete-confirm-accept" class="button danger">Видалити</button></div>
+  </dialog>
+  <dialog id="database-update-dialog" class="update-dialog"><button class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><div class="update-dialog-icon"><svg class="icon"><use href="icons.svg#refresh-cw"/></svg></div><h2 id="database-update-title">Оновлення бази</h2><p id="database-update-message"></p><div class="update-dialog-actions"><button id="database-update-cancel" class="button">Закрити</button><button id="database-update-install" class="button primary" hidden>Оновити</button></div></dialog>
+  <script src="renderer.js"></script>
+</body>
+</html>

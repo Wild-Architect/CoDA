@@ -1,0 +1,3 @@
+/* The application runs on a 125% Windows display.  Electron zoom is reduced
+   to 80% in main.js so the title bar remains 44 physical pixels high. */
+.window-controls button { width: 70px; font-size: 20px; font-weight: 500; }

@@ -1,0 +1,56 @@
+.table { table-layout: fixed; }
+
+.table th:nth-child(1),
+.table td:nth-child(1) { width: 22px; }
+
+.table th:nth-child(2),
+.table td:nth-child(2) {
+  width: 158px;
+  white-space: nowrap;
+}
+
+.table th:nth-child(3),
+.table td:nth-child(3) {
+  width: auto;
+  overflow-wrap: anywhere;
+}
+
+.edessb-heading,
+.edessb-cell {
+  text-align: center !important;
+  width: 112px;
+}
+
+.edessb-button {
+  border: 1px solid rgba(40, 143, 229, 0.24);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #46a7f1, #2488d8);
+  box-shadow: 0 2px 6px rgba(32, 116, 184, 0.2);
+  color: #fff;
+  font: 650 12px "Segoe UI", Arial, sans-serif;
+  letter-spacing: 0.3px;
+  padding: 7px 11px;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+}
+
+.edessb-button:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 4px 10px rgba(32, 116, 184, 0.28);
+  transform: translateY(-1px);
+}
+
+.edessb-button:active { transform: translateY(0); }
+
+.edessb-button.is-empty {
+  background: var(--bubble);
+  border-color: var(--line);
+  box-shadow: none;
+  color: var(--muted);
+  cursor: default;
+}
+
+.edessb-button.is-empty:hover {
+  filter: none;
+  transform: none;
+}
