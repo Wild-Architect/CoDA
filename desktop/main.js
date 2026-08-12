@@ -6,14 +6,17 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const XLSX = require('xlsx');
+const { autoUpdater } = require('electron-updater');
+const archicad = require('./archicad-service');
+const archicadProjects = require('./archicad-projects');
 
 const execFileAsync = promisify(execFile);
 const MANIFEST_URL = 'https://raw.githubusercontent.com/Wild-Architect/CoDA-Database/main/manifest.json';
-const NOTES_MANIFEST_URL = 'https://raw.githubusercontent.com/Wild-Architect/CoDA-Database/main/notes-manifest.json';
 const BUILTIN_DATABASE_VERSION = '2026.08.09.2';
-const ADMIN_LOGIN = 'AlyaAdmin';
-const ADMIN_PASSWORD_HASH = 'ccc29f81888b79bcbcea80c3d4a1adb8f716a3da291b838ebd27b20c994922aa';
-const ADMIN_PASSWORD_SALT = 'coda-admin-v1';
+app.setAppUserModelId('ua.coda.desktop');
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.allowPrerelease = false;
 
 const root = path.resolve(__dirname, '..');
 const resourcesRoot = app.isPackaged ? process.resourcesPath : root;
@@ -24,9 +27,7 @@ let notesDir = path.join(writableDataDir, 'notes');
 let attachmentsDir = path.join(writableDataDir, 'attachments');
 let stateFile = path.join(writableDataDir, 'ui_state.json');
 let updateStateFile = path.join(writableDataDir, 'database_update_state.json');
-let publicNotesDir = path.join(writableDataDir, 'public_notes_library');
-let publicNotesStateFile = path.join(writableDataDir, 'public_notes_state.json');
-const adminSessions = new Set();
+let importedNotesDir = path.join(writableDataDir, 'imported_notes');
 
 function normalizeRelative(value) {
   const normalized = String(value || '').replaceAll('\\', '/').replace(/^\/+/, '');
@@ -130,17 +131,6 @@ async function fetchManifest() {
   if (manifest.schemaVersion !== 1 || !manifest.latestVersion || !manifest.fullPackage) throw new Error('Формат manifest.json не підтримується.');
   return manifest;
 }
-async function fetchPublicNotesManifest() {
-  let manifest;
-  try {
-    const response = await fetchDownload(NOTES_MANIFEST_URL);
-    manifest = JSON.parse((await response.text()).replace(/^\uFEFF/, ''));
-  } catch (error) {
-    throw new Error(`Не вдалося прочитати notes-manifest.json: ${error?.message || error}`);
-  }
-  if (manifest.schemaVersion !== 1 || !manifest.latestVersion || !manifest.package) throw new Error('Формат notes-manifest.json не підтримується.');
-  return manifest;
-}
 async function sha256File(file) {
   const hash = crypto.createHash('sha256');
   const handle = await fs.open(file, 'r');
@@ -234,52 +224,25 @@ async function installDatabaseUpdate(manifest, sender) {
   } finally { await fs.rm(tempRoot, { recursive: true, force: true }); }
 }
 
-async function listPublicNotes() {
-  const library = await readJson(path.join(publicNotesDir, 'library.json'), { notes: [] });
-  return (Array.isArray(library.notes) ? library.notes : []).map(note => ({
-    ...note,
-    public: true,
-    readonly: true,
-    pinned: false,
-    attachments: (note.attachments || []).map(file => ({ ...file, path: `public_notes_library/${file.path}` })),
-  })).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
-}
-async function installPublicNotesLibrary(manifest, sender) {
-  const tempRoot = await fs.mkdtemp(path.join(writableDataDir, '.coda-notes-update-'));
-  try {
-    sender.send('public-notes:update-progress', { message: 'Завантаження бібліотеки нотаток…' });
-    const zip = await downloadPackage(manifest.package, tempRoot);
-    const unpacked = path.join(tempRoot, 'library');
-    await expandZip(zip, unpacked);
-    const library = await readJson(path.join(unpacked, 'library.json'), null);
-    if (library?.schemaVersion !== 1 || !Array.isArray(library.notes)) throw new Error('Пакет не містить коректної бібліотеки нотаток.');
-    for (const note of library.notes) {
-      safeNoteId(note.id);
-      for (const file of note.attachments || []) {
-        const target = resolveInside(unpacked, file.path);
-        if (!(await fs.stat(target).catch(() => null))?.isFile()) throw new Error(`У пакеті відсутнє вкладення ${file.name || file.path}.`);
-      }
-    }
-    sender.send('public-notes:update-progress', { message: 'Установлення бібліотеки…' });
-    const backup = `${publicNotesDir}.backup`;
-    await fs.rm(backup, { recursive: true, force: true });
-    if (await fs.stat(publicNotesDir).catch(() => null)) await fs.rename(publicNotesDir, backup);
-    try { await fs.rename(unpacked, publicNotesDir); }
-    catch (error) { if (await fs.stat(backup).catch(() => null)) await fs.rename(backup, publicNotesDir); throw error; }
-    await fs.rm(backup, { recursive: true, force: true });
-    await writeJson(publicNotesStateFile, { version: manifest.latestVersion, installedAt: new Date().toISOString() });
-    return { version: manifest.latestVersion, count: library.notes.length };
-  } finally { await fs.rm(tempRoot, { recursive: true, force: true }); }
+async function listImportedNotes() {
+  await ensureDataDirs();
+  const files = await fs.readdir(importedNotesDir);
+  const imported = await Promise.all(files.filter(file => file.endsWith('.json')).map(file => readJson(path.join(importedNotesDir, file), null)));
+  return imported.filter(Boolean).map(note => ({ ...note, imported: true, pinned: false })).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
 }
 
-function verifyAdminPassword(login, password) {
-  const supplied = crypto.scryptSync(String(password || ''), ADMIN_PASSWORD_SALT, 32);
-  const expected = Buffer.from(ADMIN_PASSWORD_HASH, 'hex');
-  return String(login || '') === ADMIN_LOGIN && supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+async function deleteImportedNote(id) {
+  const safeId = safeNoteId(id);
+  const noteFile = path.join(importedNotesDir, `${safeId}.json`);
+  if (!(await fs.stat(noteFile).catch(() => null))?.isFile()) throw new Error('Імпортована нотатка більше не існує.');
+  await Promise.all([
+    fs.rm(noteFile, { force: true }),
+    fs.rm(path.join(attachmentsDir, safeId), { recursive: true, force: true }),
+  ]);
+  return true;
 }
-async function exportPublicNotesLibrary(noteIds, version, author) {
-  const normalizedVersion = String(version || '').trim();
-  if (!/^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(?:\.[0-9]+)?$/.test(normalizedVersion)) throw new Error('Версія повинна мати формат 2026.09.01 або 2026.09.01.1.');
+
+async function exportNotesLibrary(noteIds, libraryName, author) {
   const chosenIds = [...new Set((noteIds || []).map(safeNoteId))];
   if (!chosenIds.length) throw new Error('Виберіть хоча б одну нотатку.');
   const available = new Map((await listNotes()).map(note => [note.id, note]));
@@ -293,7 +256,7 @@ async function exportPublicNotesLibrary(noteIds, version, author) {
     await fs.mkdir(stage, { recursive: true });
     const exportedNotes = [];
     for (const note of selected) {
-      const exported = { ...note, author: String(author || '').trim() || 'Alya', public: true, readonly: true, pinned: false, attachments: [] };
+      const exported = { ...note, author: String(author || '').trim() || 'Не вказано', pinned: false, attachments: [] };
       for (const file of note.attachments || []) {
         const source = resolveAttachment(file.path);
         const relative = `attachments/${note.id}/${path.basename(source)}`;
@@ -304,31 +267,68 @@ async function exportPublicNotesLibrary(noteIds, version, author) {
       }
       exportedNotes.push(exported);
     }
-    await writeJson(path.join(stage, 'library.json'), { schemaVersion: 1, version: normalizedVersion, exportedAt: new Date().toISOString(), notes: exportedNotes });
-    const packageName = `CoDA-notes-${normalizedVersion}.zip`;
+    const name = String(libraryName || '').trim() || 'Бібліотека нотаток';
+    await writeJson(path.join(stage, 'library.json'), { schemaVersion: 1, name, author: String(author || '').trim(), exportedAt: new Date().toISOString(), notes: exportedNotes });
+    const safeName = name.replace(/[<>:"/\\|?*]+/g, '-').replace(/\s+/g, ' ').slice(0, 80) || 'Нотатки-CoDA';
+    const packageName = `${safeName}.codanotes`;
     const packagePath = path.join(destination.filePaths[0], packageName);
+    const temporaryZip = path.join(tempRoot, 'notes-package.zip');
     await fs.rm(packagePath, { force: true });
-    const command = `Compress-Archive -Path '${path.join(stage, '*').replaceAll("'", "''")}' -DestinationPath '${packagePath.replaceAll("'", "''")}' -CompressionLevel Optimal -Force`;
+    const command = `Compress-Archive -Path '${path.join(stage, '*').replaceAll("'", "''")}' -DestinationPath '${temporaryZip.replaceAll("'", "''")}' -CompressionLevel Optimal -Force`;
     await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, maxBuffer: 1024 * 1024 });
-    const info = await fs.stat(packagePath);
-    const manifest = {
-      schemaVersion: 1,
-      latestVersion: normalizedVersion,
-      updatedAt: new Date().toISOString(),
-      package: {
-        file: packageName,
-        url: `https://github.com/Wild-Architect/CoDA-Database/releases/download/notes-${normalizedVersion}/${packageName}`,
-        size: info.size,
-        sha256: await sha256File(packagePath),
-      },
-    };
-    const manifestPath = path.join(destination.filePaths[0], 'notes-manifest.json');
-    await writeJson(manifestPath, manifest);
-    return { canceled: false, packagePath, manifestPath, count: exportedNotes.length, version: normalizedVersion };
+    await fs.copyFile(temporaryZip, packagePath);
+    return { canceled: false, packagePath, count: exportedNotes.length, name };
   } finally { await fs.rm(tempRoot, { recursive: true, force: true }); }
 }
 
-async function ensureDataDirs() { await Promise.all([fs.mkdir(notesDir, { recursive: true }), fs.mkdir(attachmentsDir, { recursive: true }), fs.mkdir(publicNotesDir, { recursive: true })]); }
+async function importNotesLibrary() {
+  const chosen = await dialog.showOpenDialog({ title: 'Імпортувати нотатки CoDA', properties: ['openFile'], filters: [{ name: 'Файл нотаток CoDA', extensions: ['codanotes'] }] });
+  if (chosen.canceled || !chosen.filePaths[0]) return { canceled: true };
+  const tempRoot = await fs.mkdtemp(path.join(writableDataDir, '.coda-notes-import-'));
+  const createdIds = [];
+  try {
+    const unpacked = path.join(tempRoot, 'library');
+    const archive = path.join(tempRoot, 'notes-package.zip');
+    await fs.copyFile(chosen.filePaths[0], archive);
+    await expandZip(archive, unpacked);
+    const library = await readJson(path.join(unpacked, 'library.json'), null);
+    if (library?.schemaVersion !== 1 || !Array.isArray(library.notes)) throw new Error('Файл не містить коректної бібліотеки нотаток CoDA.');
+    for (const sourceNote of library.notes) {
+      const id = crypto.randomUUID().replaceAll('-', '');
+      createdIds.push(id);
+      const attachments = [];
+      for (const file of sourceNote.attachments || []) {
+        const source = resolveInside(unpacked, file.path);
+        if (!(await fs.stat(source).catch(() => null))?.isFile()) throw new Error(`У пакеті відсутнє вкладення ${file.name || file.path}.`);
+        const folder = path.join(attachmentsDir, id);
+        await fs.mkdir(folder, { recursive: true });
+        const target = path.join(folder, `${crypto.randomUUID().slice(0, 8)}_${path.basename(source)}`);
+        await fs.copyFile(source, target);
+        attachments.push({ ...file, path: path.relative(writableDataDir, target) });
+      }
+      const note = { ...sourceNote, id, source_library: library.name || 'Імпортована бібліотека', source_author: sourceNote.author || library.author || '', imported: true, pinned: false, attachments };
+      await writeJson(path.join(importedNotesDir, `${id}.json`), note);
+    }
+    return { canceled: false, count: library.notes.length, name: library.name || 'Імпортована бібліотека' };
+  } catch (error) {
+    await Promise.all(createdIds.flatMap(id => [
+      fs.rm(path.join(importedNotesDir, `${id}.json`), { force: true }),
+      fs.rm(path.join(attachmentsDir, id), { recursive: true, force: true }),
+    ]));
+    throw error;
+  } finally { await fs.rm(tempRoot, { recursive: true, force: true }); }
+}
+
+async function promoteImportedNote(note) {
+  const id = safeNoteId(note.id);
+  const imported = await readJson(path.join(importedNotesDir, `${id}.json`), null);
+  if (!imported) throw new Error('Імпортована нотатка більше не існує.');
+  const saved = await saveNote({ ...imported, ...note, imported: false, pinned: false });
+  await fs.rm(path.join(importedNotesDir, `${id}.json`), { force: true });
+  return saved;
+}
+
+async function ensureDataDirs() { await Promise.all([fs.mkdir(notesDir, { recursive: true }), fs.mkdir(attachmentsDir, { recursive: true }), fs.mkdir(importedNotesDir, { recursive: true })]); }
 async function readJson(file, fallback) { try { return JSON.parse(await fs.readFile(file, 'utf8')); } catch { return fallback; } }
 async function writeJson(file, value) { await fs.writeFile(file, JSON.stringify(value, null, 2), 'utf8'); }
 function safeNoteId(value) {
@@ -344,7 +344,6 @@ function resolveAttachment(relativePath) {
 }
 function resolveReadableAttachment(relativePath) {
   const value = String(relativePath || '').replaceAll('\\', '/');
-  if (value.startsWith('public_notes_library/')) return resolveInside(publicNotesDir, value.slice('public_notes_library/'.length));
   return resolveAttachment(value);
 }
 function attachmentMime(filePath) {
@@ -410,8 +409,61 @@ async function saveNote(note) {
   return saved;
 }
 
+async function resolveArchicadProjectConnection(projectId) {
+  const project = await archicadProjects.getProject(writableDataDir, projectId);
+  const connections = await archicad.getConnections();
+  const savedPort = project.metadata.connection?.port;
+  if (savedPort) {
+    const saved = connections.find(connection => connection.port === Number(savedPort));
+    if (saved) return saved;
+    throw new Error(`Збережене підключення Archicad на порті ${savedPort} недоступне. Перепідключіть проєкт.`);
+  }
+  if (connections.length === 1) {
+    await archicadProjects.setConnection(writableDataDir, projectId, connections[0]);
+    return connections[0];
+  }
+  if (!connections.length) throw new Error('Archicad не знайдено. Відкрийте потрібний проєкт Archicad.');
+  throw new Error('Відкрито кілька проєктів Archicad. Виберіть підключення для цього проєкту CoDA.');
+}
+
+function releaseNotesText(notes) {
+  if (typeof notes === 'string') return notes;
+  if (!Array.isArray(notes)) return '';
+  return notes.map(note => typeof note === 'string' ? note : note?.note).filter(Boolean).join('\n\n');
+}
+
+async function checkProgramUpdate() {
+  if (!app.isPackaged) return { supported: false, updateAvailable: false, currentVersion: app.getVersion(), message: 'Перевірка оновлень програми працює у встановленій версії CoDA.' };
+  const result = await autoUpdater.checkForUpdates();
+  return {
+    supported: true,
+    updateAvailable: Boolean(result?.isUpdateAvailable),
+    currentVersion: app.getVersion(),
+    latestVersion: result?.updateInfo?.version || app.getVersion(),
+    releaseName: result?.updateInfo?.releaseName || '',
+    releaseNotes: releaseNotesText(result?.updateInfo?.releaseNotes),
+  };
+}
+
+async function installProgramUpdate(sender) {
+  if (!app.isPackaged) throw new Error('Оновлення можна встановити лише у встановленій версії CoDA.');
+  const progress = value => sender.send('program-update:progress', {
+    percent: Math.max(0, Math.min(100, Number(value.percent) || 0)),
+    message: `Завантаження оновлення: ${Math.round(Number(value.percent) || 0)}%`,
+  });
+  autoUpdater.on('download-progress', progress);
+  try {
+    await autoUpdater.downloadUpdate();
+    sender.send('program-update:progress', { percent: 100, message: 'Оновлення завантажено. CoDA перезапускається…' });
+    setTimeout(() => autoUpdater.quitAndInstall(false, true), 700);
+    return true;
+  } finally {
+    autoUpdater.removeListener('download-progress', progress);
+  }
+}
+
 function createWindow() {
-  const win = new BrowserWindow({ width: 1440, height: 900, minWidth: 1040, minHeight: 680, frame: false, backgroundColor: '#eaf3f7', webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, zoomFactor: 0.8 } });
+  const win = new BrowserWindow({ width: 1440, height: 900, minWidth: 1040, minHeight: 680, frame: false, icon: path.join(root, 'build', 'icon.png'), backgroundColor: '#eaf3f7', webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, zoomFactor: 0.8 } });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
@@ -422,8 +474,7 @@ app.whenReady().then(async () => {
     attachmentsDir = path.join(writableDataDir, 'attachments');
     stateFile = path.join(writableDataDir, 'ui_state.json');
     updateStateFile = path.join(writableDataDir, 'database_update_state.json');
-    publicNotesDir = path.join(writableDataDir, 'public_notes_library');
-    publicNotesStateFile = path.join(writableDataDir, 'public_notes_state.json');
+    importedNotesDir = path.join(writableDataDir, 'imported_notes');
   }
   const installedDatabase = path.join(writableDataDir, 'dbn_database');
   if (await fs.stat(path.join(installedDatabase, 'dbn_catalog.xlsx')).catch(() => null)) { databaseRoot = installedDatabase; catalogDataDir = databaseRoot; }
@@ -448,30 +499,65 @@ app.whenReady().then(async () => {
     return { updateAvailable: (local.version || BUILTIN_DATABASE_VERSION) !== manifest.latestVersion, currentVersion: local.version || BUILTIN_DATABASE_VERSION, latestVersion: manifest.latestVersion, databaseDate: manifest.databaseDate, manifest };
   });
   ipcMain.handle('database:install-update', async event => installDatabaseUpdate(await fetchManifest(), event.sender));
+  ipcMain.handle('program-update:check', checkProgramUpdate);
+  ipcMain.handle('program-update:install', event => installProgramUpdate(event.sender));
   ipcMain.handle('state:get', () => readJson(stateFile, { theme: 'light', pinned_dbn: [], recent_dbn: [], recent_notes: [] }));
   ipcMain.handle('state:set', (_event, state) => writeJson(stateFile, state));
+  ipcMain.handle('archicad:status', archicad.getStatus);
+  ipcMain.handle('archicad:connections', archicad.getConnections);
+  ipcMain.handle('archicad:foreground-connection', async event => {
+    try { return await archicad.getForegroundConnection(); }
+    finally {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (win && !win.isDestroyed()) {
+        if (win.isMinimized()) win.restore();
+        win.setAlwaysOnTop(true);
+        win.show();
+        win.focus();
+      }
+    }
+  });
+  ipcMain.handle('archicad-projects:list', () => archicadProjects.listProjects(writableDataDir));
+  ipcMain.handle('archicad-projects:create', (_event, title) => archicadProjects.createProject(writableDataDir, title));
+  ipcMain.handle('archicad-projects:set-connection', async (_event, payload) => {
+    const connections = await archicad.getConnections();
+    const connection = connections.find(entry => entry.port === Number(payload?.port));
+    if (!connection) throw new Error('Вибране підключення Archicad більше не доступне.');
+    return archicadProjects.setConnection(writableDataDir, payload?.projectId, connection);
+  });
+  ipcMain.handle('archicad-projects:export-elements', async (_event, projectId) => {
+    const connection = await resolveArchicadProjectConnection(projectId);
+    return archicadProjects.exportElements(writableDataDir, projectId, await archicad.getSnapshot(connection.port));
+  });
+  ipcMain.handle('archicad-projects:open', async (_event, payload) => {
+    const project = await archicadProjects.getProjectFile(writableDataDir, payload?.projectId, payload?.fileId);
+    const error = await shell.openPath(project.filePath);
+    if (error) throw new Error(error);
+    return true;
+  });
+  ipcMain.handle('archicad-projects:save-copy', async (_event, payload) => {
+    const project = await archicadProjects.getProjectFile(writableDataDir, payload?.projectId, payload?.fileId);
+    const result = await dialog.showSaveDialog({
+      title: 'Зберегти Excel-файл проєкту',
+      defaultPath: project.file.name,
+      filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    await fs.copyFile(project.filePath, result.filePath);
+    return { canceled: false, filePath: result.filePath };
+  });
+  ipcMain.handle('archicad-projects:import', async (_event, payload) => {
+    const connection = await resolveArchicadProjectConnection(payload?.projectId);
+    return archicad.importRows(await archicadProjects.readElementRows(writableDataDir, payload?.projectId, payload?.fileId), connection.port);
+  });
+  ipcMain.handle('archicad-projects:delete', (_event, projectId) => archicadProjects.deleteProject(writableDataDir, projectId));
+  ipcMain.handle('archicad-projects:delete-file', (_event, payload) => archicadProjects.deleteProjectFile(writableDataDir, payload?.projectId, payload?.fileId));
   ipcMain.handle('notes:list', listNotes);
-  ipcMain.handle('public-notes:list', listPublicNotes);
-  ipcMain.handle('public-notes:update-status', async () => {
-    const local = await readJson(publicNotesStateFile, { version: '' });
-    return { version: local.version || '', manifestUrl: NOTES_MANIFEST_URL };
-  });
-  ipcMain.handle('public-notes:check-update', async () => {
-    const manifest = await fetchPublicNotesManifest();
-    const local = await readJson(publicNotesStateFile, { version: '' });
-    return { updateAvailable: local.version !== manifest.latestVersion, currentVersion: local.version || '', latestVersion: manifest.latestVersion, manifest };
-  });
-  ipcMain.handle('public-notes:install-update', async event => installPublicNotesLibrary(await fetchPublicNotesManifest(), event.sender));
-  ipcMain.handle('admin:login', (event, credentials) => {
-    const authorized = verifyAdminPassword(credentials?.login, credentials?.password);
-    if (authorized) adminSessions.add(event.sender.id);
-    return authorized;
-  });
-  ipcMain.handle('admin:logout', event => { adminSessions.delete(event.sender.id); return true; });
-  ipcMain.handle('admin:export-library', async (event, payload) => {
-    if (!adminSessions.has(event.sender.id)) throw new Error('Потрібно повторно увійти в режим адміністратора.');
-    return exportPublicNotesLibrary(payload?.noteIds, payload?.version, payload?.author);
-  });
+  ipcMain.handle('imported-notes:list', listImportedNotes);
+  ipcMain.handle('imported-notes:delete', (_event, id) => deleteImportedNote(id));
+  ipcMain.handle('notes:export', (_event, payload) => exportNotesLibrary(payload?.noteIds, payload?.libraryName, payload?.author));
+  ipcMain.handle('notes:import', importNotesLibrary);
+  ipcMain.handle('imported-notes:promote', (_event, note) => promoteImportedNote(note));
   ipcMain.handle('notes:save', (_event, note) => saveNote(note));
   ipcMain.handle('notes:delete', async (_event, id) => {
     const safeId = safeNoteId(id);
@@ -528,6 +614,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('window:minimize', event => BrowserWindow.fromWebContents(event.sender).minimize());
   ipcMain.handle('window:maximize', event => { const win = BrowserWindow.fromWebContents(event.sender); win.isMaximized() ? win.unmaximize() : win.maximize(); });
+  ipcMain.handle('window:release-always-on-top', event => { const win = BrowserWindow.fromWebContents(event.sender); if (win && !win.isDestroyed()) win.setAlwaysOnTop(false); });
   ipcMain.handle('window:close', event => BrowserWindow.fromWebContents(event.sender).close());
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

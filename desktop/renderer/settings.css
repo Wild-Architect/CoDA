@@ -28,6 +28,7 @@
 .button.danger { color: #fff; background: #cf3f3f; }
 .button.danger:hover { background: #b93434; }
 [data-theme="dark"] .confirm-icon { background: rgba(207, 63, 63, .17); }
+.confirm-icon.success-icon { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .sidebar-list-item { position: relative; }
 .sidebar-list-item > [data-list] { padding-right: 38px; }
 .sidebar-list-item > [data-list] span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

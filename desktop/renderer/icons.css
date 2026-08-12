@@ -15,5 +15,5 @@
 .primary-nav button,.sidebar-bottom button,.sidebar-list button,.button,.attachment,.notes-list button{display:flex;align-items:center;gap:9px}
 .top-icon,.window-controls button,.dialog-close{display:inline-flex;align-items:center;justify-content:center}
 .top-icon .icon{width:20px;height:20px}.window-controls .icon,.dialog-close .icon{width:17px;height:17px}
-.page-head .folder{display:inline-flex;color:var(--text)}.page-head .page-actions{display:inline-flex;margin-left:auto;color:var(--muted)}
+.page-head .folder{display:inline-flex;color:var(--text)}
 .pin .icon{display:block;margin:auto}

@@ -3,16 +3,24 @@
   "version": "1.0.0",
   "productName": "CoDA",
   "description": "CoDA desktop workspace for codes, documents and architecture",
+  "author": "Wild-Architect",
+  "homepage": "https://github.com/Wild-Architect/CoDA",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Wild-Architect/CoDA.git"
+  },
   "main": "desktop/main.js",
   "scripts": {
     "start": "electron .",
-    "build:win": "electron-builder --win nsis --x64"
+    "build:win": "electron-builder --win nsis --x64 --publish never",
+    "release:win": "electron-builder --win nsis --x64 --publish always"
   },
   "devDependencies": {
     "electron": "^43.3.0",
     "electron-builder": "^26.0.12"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "pdfjs-dist": "^6.2.108",
     "xlsx": "^0.18.5"
   },
@@ -20,18 +28,53 @@
     "appId": "ua.coda.desktop",
     "productName": "CoDA",
     "asar": true,
-    "directories": { "output": "dist" },
-    "files": ["desktop/**/*", "package.json"],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Wild-Architect",
+        "repo": "CoDA",
+        "releaseType": "release"
+      }
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "desktop/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
     "extraResources": [
-      { "from": "building_codes", "to": "building_codes" },
-      { "from": "data/dbn_catalog.xlsx", "to": "data/dbn_catalog.xlsx" },
-      { "from": "data/update_history.xlsx", "to": "data/update_history.xlsx" }
+      {
+        "from": "building_codes",
+        "to": "building_codes"
+      },
+      {
+        "from": "data/dbn_catalog.xlsx",
+        "to": "data/dbn_catalog.xlsx"
+      },
+      {
+        "from": "data/update_history.xlsx",
+        "to": "data/update_history.xlsx"
+      }
     ],
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "artifactName": "CoDA-Setup-${version}.${ext}"
     },
     "nsis": {
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
