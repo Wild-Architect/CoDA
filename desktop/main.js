@@ -28,6 +28,7 @@ let attachmentsDir = path.join(writableDataDir, 'attachments');
 let stateFile = path.join(writableDataDir, 'ui_state.json');
 let updateStateFile = path.join(writableDataDir, 'database_update_state.json');
 let importedNotesDir = path.join(writableDataDir, 'imported_notes');
+let pdfBookmarksFile = path.join(writableDataDir, 'pdf_bookmarks.json');
 
 function normalizeRelative(value) {
   const normalized = String(value || '').replaceAll('\\', '/').replace(/^\/+/, '');
@@ -331,6 +332,151 @@ async function promoteImportedNote(note) {
 async function ensureDataDirs() { await Promise.all([fs.mkdir(notesDir, { recursive: true }), fs.mkdir(attachmentsDir, { recursive: true }), fs.mkdir(importedNotesDir, { recursive: true })]); }
 async function readJson(file, fallback) { try { return JSON.parse(await fs.readFile(file, 'utf8')); } catch { return fallback; } }
 async function writeJson(file, value) { await fs.writeFile(file, JSON.stringify(value, null, 2), 'utf8'); }
+const USER_DATA_ARCHIVE_KIND = 'CoDA User Data';
+const USER_DATA_ENTRIES = ['ui_state.json', 'pdf_bookmarks.json', 'notes', 'imported_notes', 'attachments', 'archicad_projects'];
+async function copyUserDataEntry(source, target) {
+  const stat = await fs.lstat(source).catch(() => null);
+  if (!stat) return false;
+  if (stat.isSymbolicLink()) throw new Error(`Символічні посилання не підтримуються: ${source}`);
+  if (stat.isDirectory()) {
+    await fs.mkdir(target, { recursive: true });
+    for (const entry of await fs.readdir(source)) await copyUserDataEntry(path.join(source, entry), path.join(target, entry));
+    return true;
+  }
+  if (!stat.isFile()) return false;
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.copyFile(source, target);
+  return true;
+}
+async function archiveFileList(folder, relative = '') {
+  const result = [];
+  for (const entry of await fs.readdir(folder, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isSymbolicLink()) throw new Error(`Символічні посилання не підтримуються: ${entry.name}`);
+    const itemRelative = path.posix.join(relative.replaceAll('\\', '/'), entry.name);
+    const itemPath = path.join(folder, entry.name);
+    if (entry.isDirectory()) result.push(...await archiveFileList(itemPath, itemRelative));
+    else if (entry.isFile()) {
+      const stat = await fs.stat(itemPath);
+      result.push({ path: itemRelative, size: stat.size, sha256: await sha256File(itemPath) });
+    }
+  }
+  return result;
+}
+function archiveEntryAllowed(relative) {
+  const normalized = String(relative || '').replaceAll('\\', '/');
+  return normalized && !normalized.startsWith('/') && !normalized.split('/').includes('..') && USER_DATA_ENTRIES.includes(normalized.split('/')[0]);
+}
+async function exportUserDataArchive() {
+  const date = new Date().toISOString().slice(0, 10);
+  const selected = await dialog.showSaveDialog({ title: 'Зберегти дані користувача CoDA', defaultPath: `CoDA-${date}.codasaves`, filters: [{ name: 'Резервна копія CoDA', extensions: ['codasaves'] }] });
+  if (selected.canceled || !selected.filePath) return { canceled: true };
+  const packagePath = selected.filePath.toLowerCase().endsWith('.codasaves') ? selected.filePath : `${selected.filePath}.codasaves`;
+  const tempRoot = await fs.mkdtemp(path.join(writableDataDir, '.coda-saves-export-'));
+  try {
+    const stage = path.join(tempRoot, 'archive'), dataRoot = path.join(stage, 'data');
+    await fs.mkdir(dataRoot, { recursive: true });
+    const entries = [];
+    for (const entry of USER_DATA_ENTRIES) if (await copyUserDataEntry(path.join(writableDataDir, entry), path.join(dataRoot, entry))) entries.push(entry);
+    const files = await archiveFileList(dataRoot);
+    await writeJson(path.join(stage, 'manifest.json'), { schemaVersion: 1, kind: USER_DATA_ARCHIVE_KIND, appVersion: app.getVersion(), exportedAt: new Date().toISOString(), entries, files });
+    const temporaryZip = path.join(tempRoot, 'user-data.zip');
+    const command = `Compress-Archive -Path '${path.join(stage, '*').replaceAll("'", "''")}' -DestinationPath '${temporaryZip.replaceAll("'", "''")}' -CompressionLevel Optimal -Force`;
+    await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, maxBuffer: 1024 * 1024 });
+    await fs.copyFile(temporaryZip, packagePath);
+    return { canceled: false, packagePath, fileCount: files.length, exportedAt: new Date().toISOString() };
+  } finally { await fs.rm(tempRoot, { recursive: true, force: true }); }
+}
+async function validateUserDataArchive(folder) {
+  const manifest = await readJson(path.join(folder, 'manifest.json'), null);
+  if (manifest?.schemaVersion !== 1 || manifest.kind !== USER_DATA_ARCHIVE_KIND || !Array.isArray(manifest.files)) throw new Error('Файл не є коректною резервною копією CoDA.');
+  if (manifest.files.length > 100000) throw new Error('Резервна копія містить забагато файлів.');
+  const dataRoot = path.join(folder, 'data'), actual = await archiveFileList(dataRoot);
+  const declaredPaths = new Set(), declaredByPath = new Map(); let totalSize = 0;
+  for (const file of manifest.files) {
+    const normalizedPath = String(file?.path || '').replaceAll('\\', '/');
+    const normalizedKey = normalizedPath.toLowerCase();
+    if (!archiveEntryAllowed(normalizedPath) || declaredPaths.has(normalizedKey)) throw new Error('Резервна копія містить некоректні шляхи.');
+    if (!Number.isSafeInteger(file.size) || file.size < 0 || !/^[a-f0-9]{64}$/i.test(String(file.sha256 || ''))) throw new Error(`Некоректний опис файла у резервній копії: ${normalizedPath}`);
+    declaredPaths.add(normalizedKey); declaredByPath.set(normalizedKey, file); totalSize += file.size;
+    if (totalSize > 8 * 1024 * 1024 * 1024) throw new Error('Обсяг резервної копії перевищує 8 ГБ.');
+  }
+  if (actual.length !== declaredPaths.size) throw new Error('Склад резервної копії не відповідає її опису.');
+  for (const file of actual) {
+    const declared = declaredByPath.get(file.path.toLowerCase());
+    if (!declared || file.size !== declared.size || file.sha256 !== String(declared.sha256).toLowerCase()) throw new Error(`Пошкоджений файл у резервній копії: ${file.path}`);
+    if (file.path.toLowerCase().endsWith('.json')) { try { JSON.parse(await fs.readFile(resolveInside(dataRoot, file.path), 'utf8')); } catch { throw new Error(`Некоректний JSON у резервній копії: ${file.path}`); } }
+  }
+  return { manifest, dataRoot };
+}
+async function importUserDataArchive() {
+  const selected = await dialog.showOpenDialog({ title: 'Імпортувати дані користувача CoDA', properties: ['openFile'], filters: [{ name: 'Резервна копія CoDA', extensions: ['codasaves'] }] });
+  if (selected.canceled || !selected.filePaths[0]) return { canceled: true };
+  const tempRoot = await fs.mkdtemp(path.join(writableDataDir, '.coda-saves-import-'));
+  try {
+    const archive = path.join(tempRoot, 'user-data.zip'), unpacked = path.join(tempRoot, 'unpacked'), rollback = path.join(tempRoot, 'rollback');
+    await fs.copyFile(selected.filePaths[0], archive); await expandZip(archive, unpacked);
+    const { manifest, dataRoot } = await validateUserDataArchive(unpacked);
+    await fs.mkdir(rollback, { recursive: true });
+    for (const entry of USER_DATA_ENTRIES) await copyUserDataEntry(path.join(writableDataDir, entry), path.join(rollback, entry));
+    try {
+      for (const entry of USER_DATA_ENTRIES) await fs.rm(path.join(writableDataDir, entry), { recursive: true, force: true });
+      for (const entry of USER_DATA_ENTRIES) await copyUserDataEntry(path.join(dataRoot, entry), path.join(writableDataDir, entry));
+      await ensureDataDirs();
+    } catch (error) {
+      for (const entry of USER_DATA_ENTRIES) await fs.rm(path.join(writableDataDir, entry), { recursive: true, force: true });
+      for (const entry of USER_DATA_ENTRIES) await copyUserDataEntry(path.join(rollback, entry), path.join(writableDataDir, entry));
+      await ensureDataDirs(); throw error;
+    }
+    return { canceled: false, importedAt: new Date().toISOString(), exportedAt: manifest.exportedAt || '', fileCount: manifest.files.length };
+  } finally { await fs.rm(tempRoot, { recursive: true, force: true }); }
+}
+function safePdfDocumentId(value) {
+  const id = String(value || '').trim();
+  if (!id || id.length > 1000 || /[\u0000-\u001f]/.test(id)) throw new Error('Некоректний ідентифікатор PDF-документа');
+  return id;
+}
+async function readPdfBookmarkStore() {
+  const store = await readJson(pdfBookmarksFile, { version: 1, documents: {} });
+  if (!store || typeof store !== 'object' || !store.documents || typeof store.documents !== 'object') return { version: 1, documents: {} };
+  return store;
+}
+async function listPdfBookmarks(documentId) {
+  const store = await readPdfBookmarkStore();
+  const list = store.documents[safePdfDocumentId(documentId)];
+  return Array.isArray(list) ? list : [];
+}
+async function addPdfBookmark(payload) {
+  await ensureDataDirs();
+  const documentId = safePdfDocumentId(payload?.documentId);
+  const page = Number(payload?.page);
+  const start = Number(payload?.start);
+  const end = Number(payload?.end);
+  const text = String(payload?.text || '').trim().slice(0, 4000);
+  const label = String(payload?.label || '').trim().slice(0, 120) || text.slice(0, 60) || 'Закладка';
+  const colors = new Set(['yellow', 'green', 'blue', 'pink', 'orange']);
+  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(start) || start < 0 || !Number.isInteger(end) || end <= start || !text) throw new Error('Некоректні дані текстової закладки');
+  const geometry = Array.isArray(payload?.geometry) ? payload.geometry.slice(0, 1000).map(rect => {
+    const x = Number(rect?.x), y = Number(rect?.y), width = Number(rect?.width), height = Number(rect?.height);
+    if (![x, y, width, height].every(Number.isFinite) || x < 0 || y < 0 || width <= 0 || height <= 0 || x >= 1 || y >= 1) return null;
+    return { x, y, width: Math.min(width, 1 - x), height: Math.min(height, 1 - y) };
+  }).filter(Boolean) : [];
+  const bookmark = { id: crypto.randomUUID(), page, start, end, text, label, color: colors.has(payload?.color) ? payload.color : 'yellow', geometry, geometryVersion: geometry.length ? 2 : 0, createdAt: new Date().toISOString() };
+  const store = await readPdfBookmarkStore();
+  const list = Array.isArray(store.documents[documentId]) ? store.documents[documentId] : [];
+  store.documents[documentId] = [bookmark, ...list];
+  await writeJson(pdfBookmarksFile, store);
+  return bookmark;
+}
+async function deletePdfBookmark(payload) {
+  await ensureDataDirs();
+  const documentId = safePdfDocumentId(payload?.documentId);
+  const id = String(payload?.id || '');
+  const store = await readPdfBookmarkStore();
+  const list = Array.isArray(store.documents[documentId]) ? store.documents[documentId] : [];
+  store.documents[documentId] = list.filter(item => item?.id !== id);
+  await writeJson(pdfBookmarksFile, store);
+  return true;
+}
 function safeNoteId(value) {
   const id = String(value || '');
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Некоректний ідентифікатор нотатки');
@@ -475,6 +621,7 @@ app.whenReady().then(async () => {
     stateFile = path.join(writableDataDir, 'ui_state.json');
     updateStateFile = path.join(writableDataDir, 'database_update_state.json');
     importedNotesDir = path.join(writableDataDir, 'imported_notes');
+    pdfBookmarksFile = path.join(writableDataDir, 'pdf_bookmarks.json');
   }
   const installedDatabase = path.join(writableDataDir, 'dbn_database');
   if (await fs.stat(path.join(installedDatabase, 'dbn_catalog.xlsx')).catch(() => null)) { databaseRoot = installedDatabase; catalogDataDir = databaseRoot; }
@@ -501,8 +648,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('database:install-update', async event => installDatabaseUpdate(await fetchManifest(), event.sender));
   ipcMain.handle('program-update:check', checkProgramUpdate);
   ipcMain.handle('program-update:install', event => installProgramUpdate(event.sender));
+  ipcMain.handle('app:version', () => app.getVersion());
   ipcMain.handle('state:get', () => readJson(stateFile, { theme: 'light', pinned_dbn: [], recent_dbn: [], recent_notes: [] }));
   ipcMain.handle('state:set', (_event, state) => writeJson(stateFile, state));
+  ipcMain.handle('user-data:export', exportUserDataArchive);
+  ipcMain.handle('user-data:import', importUserDataArchive);
+  ipcMain.handle('pdf-bookmarks:list', (_event, documentId) => listPdfBookmarks(documentId));
+  ipcMain.handle('pdf-bookmarks:add', (_event, payload) => addPdfBookmark(payload));
+  ipcMain.handle('pdf-bookmarks:delete', (_event, payload) => deletePdfBookmark(payload));
   ipcMain.handle('archicad:status', archicad.getStatus);
   ipcMain.handle('archicad:connections', archicad.getConnections);
   ipcMain.handle('archicad:foreground-connection', async event => {

@@ -16,6 +16,7 @@ data/public_notes_library/
 data/ui_state.json
 data/database_update_state.json
 data/public_notes_state.json
+data/pdf_bookmarks.json
 data/dbn_database/
 *.xlsx
 !data/dbn_catalog.xlsx

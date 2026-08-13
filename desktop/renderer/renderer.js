@@ -86,6 +86,16 @@ function confirmDelete(message, title = 'Підтвердження видале
     dialog.showModal();
   });
 }
+function confirmUserDataImport() {
+  return new Promise(resolve=>{
+    const dialog=$('#user-data-import-confirm');let completed=false;
+    const finish=answer=>{if(completed)return;completed=true;dialog.close();resolve(answer);};
+    $('#user-data-import-cancel').onclick=()=>finish(false);
+    $('#user-data-import-accept').onclick=()=>finish(true);
+    dialog.oncancel=event=>{event.preventDefault();finish(false);};
+    dialog.showModal();
+  });
+}
 
 function renderSidebar() {
   document.documentElement.dataset.theme = state.theme || 'light';
@@ -93,10 +103,10 @@ function renderSidebar() {
   $('#settings-theme-icon').setAttribute('href', state.theme === 'dark' ? 'icons.svg#sun' : 'icons.svg#moon');
   document.querySelectorAll('.primary-nav button').forEach(button => button.classList.toggle('active', button.dataset.page === currentPage));
   const pinnedNotes = notes.filter(note => note.pinned).map(note => ({ label: note.title, kind:'notebook-pen', action: () => openNote(note), unpin: async () => { note.pinned=false; await window.ekp.saveNote(note); notes=await window.ekp.notes(); if(selectedNote?.id===note.id) selectedNote=notes.find(item=>item.id===note.id)||selectedNote; renderSidebar(); } }));
-  const pinnedDbn = catalog.filter(item => (state.pinned_dbn || []).includes(item.path)).map(item => ({ label:item.number, kind:'book-open', action: () => openDbn(item), unpin: async () => { state.pinned_dbn=(state.pinned_dbn||[]).filter(path=>path!==item.path); await saveState(); renderSidebar(); } }));
+  const pinnedDbn = catalog.filter(item => (state.pinned_dbn || []).includes(item.path)).map(item => ({ label:`${item.number} — ${item.title}`, kind:'book-open', action: () => openDbn(item), unpin: async () => { state.pinned_dbn=(state.pinned_dbn||[]).filter(path=>path!==item.path); await saveState(); renderSidebar(); } }));
   const noteMap = new Map(notes.map(note => [note.id, note])); const dbnMap = new Map(catalog.map(item => [item.path, item]));
   const recently = [...(state.recent_notes || []).map(id => noteMap.get(id)).filter(Boolean).map(note => ({label:note.title,kind:'notebook-pen',action:()=>openNote(note)})), ...(state.recent_dbn || []).map(id => dbnMap.get(id)).filter(Boolean).map(item => ({label:item.number,kind:'book-open',action:()=>openDbn(item)}))];
-  const list = (title, items) => !items.length ? '' : `<div class="side-heading">${title}</div><div class="sidebar-list">${items.slice(0,6).map((item,i) => `<div class="sidebar-list-item"><button data-list="${title}" data-index="${i}">${icon(item.kind, 'small')}<span>${escape(item.label)}</span></button>${item.unpin?`<button class="sidebar-unpin" data-unpin="${i}" title="Прибрати із закріплених">${icon('x','small')}</button>`:''}</div>`).join('')}</div>`;
+  const list = (title, items) => !items.length ? '' : `<div class="side-heading">${title}</div><div class="sidebar-list">${items.slice(0,6).map((item,i) => `<div class="sidebar-list-item"><button data-list="${title}" data-index="${i}" title="${escape(item.label)}">${icon(item.kind, 'small')}<span>${escape(item.label)}</span></button>${item.unpin?`<button class="sidebar-unpin" data-unpin="${i}" title="Прибрати із закріплених">${icon('x','small')}</button>`:''}</div>`).join('')}</div>`;
   const pinned = [...pinnedNotes, ...pinnedDbn]; $('#side-lists').innerHTML = list('Закріплені', pinned) + list('Нещодавні', recently);
   document.querySelectorAll('[data-list]').forEach(button => button.onclick = () => (button.dataset.list === 'Закріплені' ? pinned : recently)[Number(button.dataset.index)].action());
   document.querySelectorAll('[data-unpin]').forEach(button => button.onclick = event => { event.stopPropagation(); pinned[Number(button.dataset.unpin)]?.unpin?.(); });
@@ -239,7 +249,9 @@ function disposePdfViewer() {
   activePdf.observer?.disconnect();
   activePdf.renderTasks.forEach(task => task?.cancel?.());
   activePdf.textLayers.forEach(layer => layer.cancel());
+  if (activePdf.selectionFrame) cancelAnimationFrame(activePdf.selectionFrame);
   activePdf = null;
+  document.onselectionchange = null;
   window.onkeydown = null; window.onkeyup = null; window.onblur = null;
 }
 
@@ -271,6 +283,116 @@ async function loadPdfJs() {
   return pdfjsLibPromise;
 }
 
+function pdfDomTextMap(layer) {
+  const nodes = [], walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+  let text = '', node;
+  while ((node = walker.nextNode())) { const start = text.length; text += node.nodeValue || ''; nodes.push({ node, start, end:text.length }); }
+  return { text, nodes };
+}
+function pdfTextMap(layer) {
+  const page=Number(layer?.closest('[data-pdf-page]')?.dataset.pdfPage),mapped=activePdf?.pageTextMaps?.get(page);
+  if(!mapped)return pdfDomTextMap(layer);
+  const nodes=[];
+  mapped.items.forEach(item=>{let cursor=item.start,walker=document.createTreeWalker(item.element,NodeFilter.SHOW_TEXT),node;while((node=walker.nextNode())){const start=cursor;cursor+=node.nodeValue?.length||0;nodes.push({node,element:item.element,start,end:cursor});}});
+  return{text:mapped.text,nodes,items:mapped.items};
+}
+function pdfTextLayerMap(textLayer) {
+  const items=[];let text='';
+  textLayer.textContentItemsStr.forEach((value,index)=>{const start=text.length;text+=value||'';const element=textLayer.textDivs[index];if(element)items.push({element,text:value||'',start,end:text.length});});
+  return{text,items};
+}
+function pdfBoundaryOffset(map, container, offset) {
+  if (container.nodeType === Node.TEXT_NODE) { const item = map.nodes.find(entry => entry.node === container); return item ? item.start + Math.min(offset, item.end-item.start) : -1; }
+  const first = container.childNodes?.[offset];
+  if (first) { const item = map.nodes.find(entry => entry.node === first || first.contains?.(entry.node)); if (item) return item.start; }
+  const previous = container.childNodes?.[offset-1];
+  if (previous) { const items = map.nodes.filter(entry => entry.node === previous || previous.contains?.(entry.node)); if (items.length) return items.at(-1).end; }
+  return -1;
+}
+function normalizePdfRects(rects) {
+  const lines=[];
+  rects.filter(rect=>rect.width>.5&&rect.height>.5).sort((a,b)=>a.top-b.top||a.left-b.left).forEach(rect=>{
+    const center=(rect.top+rect.bottom)/2;
+    let line=lines.find(item=>Math.abs(center-item.center)<=Math.max(1.5,Math.min(rect.height,item.height)*.35));
+    if(!line){line={top:rect.top,bottom:rect.bottom,center,height:rect.height,segments:[]};lines.push(line);}
+    else{line.top=Math.min(line.top,rect.top);line.bottom=Math.max(line.bottom,rect.bottom);line.center=(line.top+line.bottom)/2;line.height=line.bottom-line.top;}
+    line.segments.push({left:rect.left,right:rect.right});
+  });
+  return lines.flatMap(line=>{
+    const gap=Math.max(1.5,line.height*.28),merged=[];
+    line.segments.sort((a,b)=>a.left-b.left).forEach(segment=>{const current=merged.at(-1);if(current&&segment.left<=current.right+gap)current.right=Math.max(current.right,segment.right);else merged.push({...segment});});
+    return merged.map(segment=>({left:segment.left,top:line.top,width:segment.right-segment.left,height:line.bottom-line.top}));
+  });
+}
+function pdfRectsFromOffsets(shell,layer,start,end) {
+  if(!shell||!layer||end<=start)return[];
+  const map=pdfTextMap(layer),parent=shell.getBoundingClientRect(),rects=[];
+  map.nodes.forEach(item=>{
+    let from=Math.max(start,item.start),to=Math.min(end,item.end);if(to<=from)return;
+    const selectedText=map.text.slice(from,to),leading=selectedText.length-selectedText.trimStart().length,trailing=selectedText.length-selectedText.trimEnd().length;from+=leading;to-=trailing;if(to<=from)return;
+    const range=document.createRange();range.setStart(item.node,from-item.start);range.setEnd(item.node,to-item.start);const itemBounds=(item.element||item.node.parentElement).getBoundingClientRect();
+    [...range.getClientRects()].forEach(rect=>{const left=Math.max(0,rect.left-parent.left,itemBounds.left-parent.left),top=Math.max(0,rect.top-parent.top,itemBounds.top-parent.top),right=Math.min(parent.width,rect.right-parent.left,itemBounds.right-parent.left),bottom=Math.min(parent.height,rect.bottom-parent.top,itemBounds.bottom-parent.top);if(right-left>.5&&bottom-top>.5)rects.push({left,top,right,bottom,width:right-left,height:bottom-top});});
+  });
+  return normalizePdfRects(rects);
+}
+function pdfNormalizeGeometry(shell,rects){const width=shell.clientWidth||1,height=shell.clientHeight||1;return rects.map(rect=>({x:rect.left/width,y:rect.top/height,width:rect.width/width,height:rect.height/height}));}
+function pdfRectsFromGeometry(shell,geometry){const width=shell.clientWidth||1,height=shell.clientHeight||1;return Array.isArray(geometry)?geometry.map(rect=>({left:rect.x*width,top:rect.y*height,width:rect.width*width,height:rect.height*height})):[];}
+function pdfDrawRects(shell,rects,className,bookmarkId='') {
+  const overlay=shell?.querySelector('.pdf-markup-layer');if(!overlay)return;
+  rects.forEach(rect=>{if(rect.width<.5||rect.height<.5)return;const mark=document.createElement('span');mark.className=`pdf-mark ${className}`;if(bookmarkId)mark.dataset.bookmarkId=bookmarkId;Object.assign(mark.style,{left:`${rect.left}px`,top:`${rect.top}px`,width:`${rect.width}px`,height:`${rect.height}px`});overlay.append(mark);});
+}
+function currentPdfSelections() {
+  if(!activePdf)return[];const selection=window.getSelection();if(!selection||selection.isCollapsed||selection.rangeCount!==1)return[];const range=selection.getRangeAt(0);
+  const startLayer=(range.startContainer.nodeType===Node.ELEMENT_NODE?range.startContainer:range.startContainer.parentElement)?.closest?.('.textLayer'),endLayer=(range.endContainer.nodeType===Node.ELEMENT_NODE?range.endContainer:range.endContainer.parentElement)?.closest?.('.textLayer');if(!startLayer||!endLayer)return[];
+  const startPage=Number(startLayer.closest('[data-pdf-page]')?.dataset.pdfPage),endPage=Number(endLayer.closest('[data-pdf-page]')?.dataset.pdfPage);if(!startPage||!endPage||endPage<startPage)return[];
+  return[...document.querySelectorAll('.textLayer')].map(layer=>{const shell=layer.closest('[data-pdf-page]'),page=Number(shell?.dataset.pdfPage);if(!shell||page<startPage||page>endPage)return null;const map=pdfTextMap(layer),start=layer===startLayer?pdfBoundaryOffset(map,range.startContainer,range.startOffset):0,end=layer===endLayer?pdfBoundaryOffset(map,range.endContainer,range.endOffset):map.text.length;return start>=0&&end>start?{selection,range,layer,shell,map,start,end,page}:null;}).filter(Boolean);
+}
+function currentPdfSelection(){const selected=currentPdfSelections();return selected.length===1?selected[0]:null;}
+function renderPdfNativeSelection() {
+  document.querySelectorAll('.pdf-mark-selection').forEach(mark=>mark.remove());if(!activePdf)return;
+  const selected=currentPdfSelections();activePdf.nativeSelection=selected.map(item=>({page:item.page,start:item.start,end:item.end}));
+  selected.forEach(item=>pdfDrawRects(item.shell,pdfRectsFromOffsets(item.shell,item.layer,item.start,item.end),'pdf-mark-selection'));
+}
+function queuePdfNativeSelectionRender(){if(!activePdf||activePdf.selectionFrame)return;activePdf.selectionFrame=requestAnimationFrame(()=>{if(activePdf)activePdf.selectionFrame=0;renderPdfNativeSelection();});}
+function pdfAppendInlineText(element,text,className='') {
+  if(!className){element.append(document.createTextNode(text));return;}
+  const leading=text.length-text.trimStart().length,trailing=text.length-text.trimEnd().length,end=text.length-trailing;
+  if(leading)element.append(document.createTextNode(text.slice(0,leading)));
+  if(end>leading){const mark=document.createElement('mark');mark.className=`pdf-inline-mark ${className}`;mark.textContent=text.slice(leading,end);element.append(mark);}
+  if(trailing)element.append(document.createTextNode(text.slice(end)));
+}
+function renderPdfInlineMarks(pageNumber) {
+  const map=activePdf?.pageTextMaps?.get(pageNumber);if(!map)return;
+  const marks=[...activePdf.bookmarks.filter(item=>item.page===pageNumber).map((item,index)=>({start:item.start,end:item.end,className:`pdf-inline-${item.color}`,priority:10-index/10000})),...activePdf.searchMatches.filter(item=>item.page===pageNumber).map(item=>{const index=activePdf.searchMatches.indexOf(item);return{start:item.start,end:item.end,className:index===activePdf.searchIndex?'pdf-inline-search-current':'pdf-inline-search',priority:index===activePdf.searchIndex?30:20};})];
+  map.items.forEach(item=>{
+    const local=marks.filter(mark=>mark.end>item.start&&mark.start<item.end),boundaries=new Set([0,item.text.length]);local.forEach(mark=>{boundaries.add(Math.max(0,mark.start-item.start));boundaries.add(Math.min(item.text.length,mark.end-item.start));});const points=[...boundaries].sort((a,b)=>a-b);item.element.replaceChildren();
+    for(let index=0;index<points.length-1;index++){const from=points[index],to=points[index+1],winner=local.filter(mark=>mark.start<item.start+to&&mark.end>item.start+from).sort((a,b)=>b.priority-a.priority)[0];pdfAppendInlineText(item.element,item.text.slice(from,to),winner?.className||'');}
+  });
+}
+function renderPdfPageMarks(pageNumber) {
+  if(!activePdf)return; const shell=document.querySelector(`[data-pdf-page="${pageNumber}"]`), layer=shell?.querySelector('.textLayer'), overlay=shell?.querySelector('.pdf-markup-layer'); if(!layer||!overlay)return;
+  overlay.replaceChildren();
+  renderPdfInlineMarks(pageNumber);
+  if(activePdf.nativeSelection?.some(item=>item.page===pageNumber)){const selected=currentPdfSelections().find(item=>item.page===pageNumber);if(selected)pdfDrawRects(shell,pdfRectsFromOffsets(shell,layer,selected.start,selected.end),'pdf-mark-selection');}
+}
+const pdfBookmarkColor=color=>({yellow:'#d7b900',green:'#39a85d',blue:'#278fdc',pink:'#d65491',orange:'#df7e20'})[color]||'#d7b900';
+function renderPdfBookmarksPanel() {
+  if(!activePdf||!$('#pdf-bookmarks-list'))return;
+  $('#pdf-bookmarks-list').innerHTML=activePdf.bookmarks.length?activePdf.bookmarks.map(item=>`<button class="pdf-bookmark-item${activePdf.activeBookmarkId===item.id?' active':''}" data-pdf-bookmark="${escape(item.id)}" style="--bookmark-color:${pdfBookmarkColor(item.color)}" title="${escape(item.text)}"><strong>${escape(item.label)}</strong><span>Сторінка ${item.page} · ${escape(item.text)}</span><span class="pdf-bookmark-delete" data-delete-pdf-bookmark="${escape(item.id)}" title="Видалити">${icon('trash')}</span></button>`).join(''):'<div class="pdf-bookmark-empty">Виділіть текст у документі, оберіть колір і збережіть текстову закладку.</div>';
+  document.querySelectorAll('[data-pdf-bookmark]').forEach(button=>button.onclick=async()=>{const item=activePdf?.bookmarks.find(entry=>entry.id===button.dataset.pdfBookmark);if(!item)return;activePdf.activeBookmarkId=item.id;await scrollToPdfPage(item.page);renderPdfPageMarks(item.page);renderPdfBookmarksPanel();});
+  document.querySelectorAll('[data-delete-pdf-bookmark]').forEach(button=>button.onclick=async event=>{event.stopPropagation();const id=button.dataset.deletePdfBookmark;await window.ekp.deletePdfBookmark({documentId:activePdf.documentId,id});activePdf.bookmarks=activePdf.bookmarks.filter(item=>item.id!==id);document.querySelectorAll('[data-pdf-page]').forEach(shell=>renderPdfPageMarks(Number(shell.dataset.pdfPage)));renderPdfBookmarksPanel();});
+}
+function clearPdfSelectionEditor(){if(activePdf)activePdf.selection=null;if($('#pdf-selection-editor'))$('#pdf-selection-editor').hidden=true;}
+function capturePdfSelection(){
+  const selected=currentPdfSelection();if(!selected)return;let{start,end}=selected;const raw=selected.map.text.slice(start,end),leading=raw.length-raw.trimStart().length,trailing=raw.length-raw.trimEnd().length;start+=leading;end-=trailing;const text=selected.map.text.slice(start,end).trim();if(!text)return;
+  const geometry=pdfNormalizeGeometry(selected.shell,pdfRectsFromOffsets(selected.shell,selected.layer,start,end));if(!geometry.length)return;
+  activePdf.selection={page:selected.page,start,end,text:text.slice(0,4000),color:'yellow',geometry};$('#pdf-selection-preview').textContent=text;$('#pdf-bookmark-label').value='';$('#pdf-selection-editor').hidden=false;document.querySelectorAll('.pdf-color').forEach(button=>button.classList.toggle('active',button.dataset.color==='yellow'));
+}
+async function savePdfSelectionBookmark(){if(!activePdf?.selection)return;const bookmark=await window.ekp.addPdfBookmark({documentId:activePdf.documentId,...activePdf.selection,label:$('#pdf-bookmark-label').value});activePdf.bookmarks.unshift(bookmark);activePdf.activeBookmarkId=bookmark.id;clearPdfSelectionEditor();window.getSelection()?.removeAllRanges();renderPdfPageMarks(bookmark.page);renderPdfBookmarksPanel();}
+async function indexPdfText(){if(!activePdf?.document)return;const session=activePdf;for(let page=1;page<=session.document.numPages;page++){if(session.pageTexts.has(page))continue;const pdfPage=await session.document.getPage(page),content=await pdfPage.getTextContent();if(activePdf!==session)return;session.pageTexts.set(page,content.items.map(item=>item.str||'').join(''));}}
+async function goToPdfSearchMatch(index){if(!activePdf?.searchMatches.length)return;activePdf.searchIndex=(index+activePdf.searchMatches.length)%activePdf.searchMatches.length;const match=activePdf.searchMatches[activePdf.searchIndex];await scrollToPdfPage(match.page);$('#pdf-search-count').textContent=`${activePdf.searchIndex+1} / ${activePdf.searchMatches.length}`;document.querySelectorAll('[data-pdf-page]').forEach(shell=>renderPdfPageMarks(Number(shell.dataset.pdfPage)));}
+async function performPdfSearch(){if(!activePdf?.document)return;const query=$('#pdf-search-input').value.trim(),token=++activePdf.searchToken;activePdf.searchMatches=[];activePdf.searchIndex=-1;if(!query){$('#pdf-search-count').textContent='';document.querySelectorAll('[data-pdf-page]').forEach(shell=>renderPdfPageMarks(Number(shell.dataset.pdfPage)));return;}$('#pdf-search-count').textContent='Пошук…';await indexPdfText();if(!activePdf||token!==activePdf.searchToken)return;const needle=query.toLocaleLowerCase('uk');for(const[page,text]of activePdf.pageTexts){const haystack=text.toLocaleLowerCase('uk');let start=0,index;while((index=haystack.indexOf(needle,start))!==-1){activePdf.searchMatches.push({page,start:index,end:index+needle.length});start=index+Math.max(1,needle.length);if(activePdf.searchMatches.length>=5000)break;}}if(!activePdf.searchMatches.length){$('#pdf-search-count').textContent='0 збігів';return;}await goToPdfSearchMatch(0);}
+
 async function renderPdfPage(pageNumber) {
   if (!activePdf?.document || activePdf.rendered.has(pageNumber)) return;
   const shell = document.querySelector(`[data-pdf-page="${pageNumber}"]`);
@@ -291,6 +413,8 @@ async function renderPdfPage(pageNumber) {
     shell.style.width = `${Math.floor(viewport.width)}px`;
     shell.style.height = `${Math.floor(viewport.height)}px`;
     shell.style.minHeight = `${Math.floor(viewport.height)}px`;
+    shell.style.setProperty('--scale-factor', String(viewport.scale));
+    shell.style.setProperty('--user-unit', String(viewport.userUnit));
     const task = pdfPage.render({ canvasContext: context, viewport, transform: pixelRatio === 1 ? null : [pixelRatio, 0, 0, pixelRatio, 0, 0] });
     session.renderTasks.set(pageNumber, task);
     await task.promise;
@@ -301,6 +425,8 @@ async function renderPdfPage(pageNumber) {
     const textLayer = new session.pdfjs.TextLayer({ textContentSource: textContent, container: textLayerElement, viewport });
     session.textLayers.set(pageNumber, textLayer);
     await textLayer.render();
+    const textMap=pdfTextLayerMap(textLayer);session.pageTextMaps.set(pageNumber,textMap);session.pageTexts.set(pageNumber,textMap.text);
+    renderPdfPageMarks(pageNumber);
     if (activePdf === session) session.rendered.add(pageNumber);
   } catch (error) {
     if (error?.name !== 'RenderingCancelledException') throw error;
@@ -321,18 +447,20 @@ function updateCurrentPdfPage() {
   $('#pdf-page-number').value = nearest;
 }
 
-function scrollToPdfPage(pageNumber, behavior = 'smooth') {
+async function scrollToPdfPage(pageNumber, behavior = 'smooth') {
   if (!activePdf?.document) return;
   activePdf.pageNumber = Math.max(1, Math.min(activePdf.document.numPages, pageNumber));
+  await renderPdfPage(activePdf.pageNumber);
   document.querySelector(`[data-pdf-page="${activePdf.pageNumber}"]`)?.scrollIntoView({ behavior, block: 'start' });
   $('#pdf-page-number').value = activePdf.pageNumber;
-  renderPdfPage(activePdf.pageNumber);
 }
 
 function buildPdfPages() {
   activePdf.textLayers.forEach(layer => layer.cancel());
   activePdf.textLayers.clear();
-  const pages = Array.from({ length: activePdf.document.numPages }, (_, index) => `<section class="pdf-page-shell" data-pdf-page="${index + 1}"><canvas></canvas><div class="textLayer" aria-label="Текст сторінки ${index + 1}"></div><span class="pdf-page-label">${index + 1}</span></section>`).join('');
+  activePdf.pageTextMaps.clear();
+  const placeholderWidth=Math.floor((activePdf.defaultPageSize?.width||612)*activePdf.scale),placeholderHeight=Math.floor((activePdf.defaultPageSize?.height||792)*activePdf.scale);
+  const pages = Array.from({ length: activePdf.document.numPages }, (_, index) => `<section class="pdf-page-shell" data-pdf-page="${index + 1}" style="width:${placeholderWidth}px;height:${placeholderHeight}px"><canvas></canvas><div class="pdf-markup-layer" aria-hidden="true"></div><div class="textLayer" aria-label="Текст сторінки ${index + 1}"></div><span class="pdf-page-label">${index + 1}</span></section>`).join('');
   $('#pdf-stage').innerHTML = `<div class="pdf-pages${activePdf.layout === 'spread' ? ' two-page' : ''}">${pages}</div>`;
   activePdf.observer?.disconnect();
   activePdf.observer = new IntersectionObserver(entries => entries.forEach(entry => { if (entry.isIntersecting) renderPdfPage(Number(entry.target.dataset.pdfPage)); }), { root: $('#pdf-stage'), rootMargin: '700px 0px', threshold: .01 });
@@ -365,11 +493,12 @@ async function setPdfLayout(layout) {
 
 function setPdfScale(scale) {
   if (!activePdf?.document) return;
-  activePdf.scale = Math.max(.5, Math.min(3, Math.round(scale * 10) / 10));
+  activePdf.scale = Math.max(.5, Math.min(3, Math.round(scale * 100) / 100));
   activePdf.renderTasks.forEach(task => task?.cancel?.());
   activePdf.renderTasks.clear();
   activePdf.textLayers.forEach(layer => layer.cancel());
   activePdf.textLayers.clear();
+  activePdf.pageTextMaps.clear();
   activePdf.rendered.clear();
   $('#pdf-zoom-value').textContent = `${Math.round(activePdf.scale * 100)}%`;
   const pageNumber = activePdf.pageNumber;
@@ -380,9 +509,10 @@ function setPdfScale(scale) {
 async function renderPdfViewer(item) {
   $('.surface').classList.remove('notes-mode');
   disposePdfViewer();
-  activePdf = { item, document: null, pdfjs: null, pageNumber: 1, scale: 1.25, singleScale: 1.25, layout: 'single', rendered: new Set(), renderTasks: new Map(), textLayers: new Map(), observer: null, rightAlt: false, zoomWheelLocked: false };
+  const documentId = `${item.attachment ? 'attachment' : 'dbn'}:${item.path}`;
+  activePdf = { item, documentId, document: null, defaultPageSize: null, pdfjs: null, pageNumber: 1, scale: 1.25, singleScale: 1.25, layout: 'single', rendered: new Set(), renderTasks: new Map(), textLayers: new Map(), pageTexts: new Map(), pageTextMaps: new Map(), bookmarks: [], selection: null, nativeSelection: [], selectionFrame: 0, activeBookmarkId: '', searchMatches: [], searchIndex: -1, searchToken: 0, observer: null, rightAlt: false, zoomWheelLocked: false };
   const backLabel = item.attachment ? 'До нотатки' : 'До каталогу';
-  page.innerHTML = head(item.number) + `<div class="pdf-viewer"><div class="pdf-toolbar"><button id="pdf-back" class="button">${icon('chevron-left')}<span>${backLabel}</span></button><div class="pdf-toolbar-group"><button id="pdf-prev" class="pdf-icon-button" title="Попередня сторінка">${icon('chevron-left')}</button><input id="pdf-page-number" class="pdf-page-input" type="number" min="1" value="1"><span id="pdf-page-count">/ —</span><button id="pdf-next" class="pdf-icon-button" title="Наступна сторінка">${icon('chevron-right')}</button></div><div class="pdf-layout-switch" aria-label="Режим відображення сторінок"><button id="pdf-layout-single" class="pdf-icon-button active" title="Одна сторінка" aria-pressed="true">${icon('page-single')}</button><button id="pdf-layout-spread" class="pdf-icon-button" title="Дві сторінки поруч" aria-pressed="false">${icon('pages-two')}</button></div><div class="pdf-toolbar-group"><button id="pdf-zoom-out" class="pdf-icon-button" title="Зменшити">${icon('minus')}</button><span id="pdf-zoom-value">125%</span><button id="pdf-zoom-in" class="pdf-icon-button" title="Збільшити">${icon('plus')}</button></div><span class="pdf-zoom-hint">Правий Alt + колесо — масштаб</span><button id="pdf-open-system" class="button">${icon('external-link')}<span>Відкрити окремо</span></button></div><div id="pdf-stage" class="pdf-stage"><div id="pdf-status" class="pdf-status">Завантаження документа…</div></div></div>`;
+  page.innerHTML = head(item.number) + `<div class="pdf-viewer"><div class="pdf-toolbar"><button id="pdf-back" class="button">${icon('chevron-left')}<span>${backLabel}</span></button><div class="pdf-search"><div class="pdf-search-box">${icon('search')}<input id="pdf-search-input" class="pdf-search-input" placeholder="Пошук у документі"></div><span id="pdf-search-count" class="pdf-search-count"></span><button id="pdf-search-prev" class="pdf-icon-button" title="Попередній збіг">${icon('chevron-left')}</button><button id="pdf-search-next" class="pdf-icon-button" title="Наступний збіг">${icon('chevron-right')}</button></div><div class="pdf-toolbar-group"><button id="pdf-prev" class="pdf-icon-button" title="Попередня сторінка">${icon('chevron-left')}</button><input id="pdf-page-number" class="pdf-page-input" type="number" min="1" value="1"><span id="pdf-page-count">/ —</span><button id="pdf-next" class="pdf-icon-button" title="Наступна сторінка">${icon('chevron-right')}</button></div><div class="pdf-layout-switch" aria-label="Режим відображення сторінок"><button id="pdf-layout-single" class="pdf-icon-button active" title="Одна сторінка" aria-pressed="true">${icon('page-single')}</button><button id="pdf-layout-spread" class="pdf-icon-button" title="Дві сторінки поруч" aria-pressed="false">${icon('pages-two')}</button></div><div class="pdf-toolbar-group"><button id="pdf-zoom-out" class="pdf-icon-button" title="Зменшити">${icon('minus')}</button><span id="pdf-zoom-value">125%</span><button id="pdf-zoom-in" class="pdf-icon-button" title="Збільшити">${icon('plus')}</button></div><button id="pdf-open-system" class="button">${icon('external-link')}<span>Відкрити окремо</span></button></div><div class="pdf-workspace"><div id="pdf-stage" class="pdf-stage"><div id="pdf-status" class="pdf-status">Завантаження документа…</div></div><aside class="pdf-bookmarks-panel"><div class="pdf-bookmarks-head">${icon('bookmark')}<span>Текстові закладки</span></div><div id="pdf-selection-editor" class="pdf-selection-editor" hidden><div class="pdf-selection-caption">Виділений текст</div><div id="pdf-selection-preview" class="pdf-selection-preview"></div><input id="pdf-bookmark-label" class="pdf-bookmark-label" maxlength="120" placeholder="Ключове слово"><div class="pdf-color-row"><button class="pdf-color active" data-color="yellow" title="Жовтий"></button><button class="pdf-color" data-color="green" title="Зелений"></button><button class="pdf-color" data-color="blue" title="Блакитний"></button><button class="pdf-color" data-color="pink" title="Рожевий"></button><button class="pdf-color" data-color="orange" title="Помаранчевий"></button></div><div class="pdf-selection-actions"><button id="pdf-bookmark-cancel" class="button">Скасувати</button><button id="pdf-bookmark-save" class="button primary">Зберегти</button></div></div><div id="pdf-bookmarks-list" class="pdf-bookmarks-list"></div></aside></div></div>`;
   $('#pdf-back').onclick = () => item.attachment ? moveHistory(-1) : navigate('dbn');
   $('#pdf-open-system').onclick = () => item.attachment ? window.ekp.openFile(item.path) : window.ekp.openDbn(item.path);
   $('#pdf-prev').onclick = () => scrollToPdfPage(activePdf.pageNumber - 1);
@@ -392,6 +522,16 @@ async function renderPdfViewer(item) {
   $('#pdf-zoom-out').onclick = () => setPdfScale(activePdf.scale - .25);
   $('#pdf-zoom-in').onclick = () => setPdfScale(activePdf.scale + .25);
   $('#pdf-page-number').onchange = event => scrollToPdfPage(Number(event.target.value) || 1);
+  let searchTimer;
+  $('#pdf-search-input').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(performPdfSearch, 280); };
+  $('#pdf-search-input').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); goToPdfSearchMatch(activePdf.searchIndex + (event.shiftKey ? -1 : 1)); } };
+  $('#pdf-search-prev').onclick = () => goToPdfSearchMatch(activePdf.searchIndex - 1);
+  $('#pdf-search-next').onclick = () => goToPdfSearchMatch(activePdf.searchIndex + 1);
+  $('#pdf-stage').addEventListener('pointerup', () => setTimeout(capturePdfSelection));
+  document.onselectionchange = queuePdfNativeSelectionRender;
+  document.querySelectorAll('.pdf-color').forEach(button => button.onclick = () => { if (!activePdf?.selection) return; activePdf.selection.color = button.dataset.color; document.querySelectorAll('.pdf-color').forEach(item => item.classList.toggle('active', item === button)); });
+  $('#pdf-bookmark-cancel').onclick = () => { clearPdfSelectionEditor(); window.getSelection()?.removeAllRanges(); };
+  $('#pdf-bookmark-save').onclick = savePdfSelectionBookmark;
   window.onkeydown = event => { if (event.code === 'AltRight' && activePdf) activePdf.rightAlt = true; };
   window.onkeyup = event => { if (event.code === 'AltRight' && activePdf) activePdf.rightAlt = false; };
   window.onblur = () => { if (activePdf) activePdf.rightAlt = false; };
@@ -408,7 +548,10 @@ async function renderPdfViewer(item) {
     const data = item.attachment ? source.data : source;
     activePdf.pdfjs = pdfjs;
     activePdf.document = await pdfjs.getDocument({ data: new Uint8Array(data) }).promise;
+    const defaultPage=await activePdf.document.getPage(1),defaultViewport=defaultPage.getViewport({scale:1});activePdf.defaultPageSize={width:defaultViewport.width,height:defaultViewport.height};
+    activePdf.bookmarks = await window.ekp.pdfBookmarks(activePdf.documentId);
     $('#pdf-page-count').textContent = `/ ${activePdf.document.numPages}`;
+    renderPdfBookmarksPanel();
     buildPdfPages();
     await renderPdfPage(1);
   } catch (error) {
@@ -569,6 +712,7 @@ $('#settings-theme').onclick=async()=>{state.theme=state.theme==='dark'?'light':
 $('#settings-program-update').onclick=()=>{closeSettings();checkProgramUpdate(true);};
 $('#settings-about').onclick=()=>{closeSettings();$('#about').showModal();};
 $('#settings-updates').onclick=async()=>{closeSettings();const entries=await window.ekp.updateHistory();$('#updates-content').innerHTML=entries.length?`<div class="updates-list">${entries.map(entry=>`<article class="update-entry"><div class="update-version">${escape(entry.version)}</div><div class="update-description">${escape(entry.description)}</div></article>`).join('')}</div>`:'<p class="updates-empty">Історія поки порожня. Заповніть файл update_history.xlsx у папці data.</p>';$('#updates').showModal();};
+$('#settings-user-data').onclick=()=>{closeSettings();$('#user-data-status').textContent='';$('#user-data-dialog').showModal();};
 document.addEventListener('click',event=>{if(!$('#settings-menu').contains(event.target))closeSettings();});
 document.querySelectorAll('.dialog-close').forEach(button=>button.onclick=()=>button.closest('dialog').close());
 $('#check-database-update').onclick=checkDatabaseUpdate;
@@ -580,7 +724,9 @@ $('#program-update-install').onclick=installProgramUpdate;
 $('#export-close').onclick=()=>$('#export-dialog').close();
 $('#export-success-ok').onclick=()=>$('#export-success-dialog').close();
 $('#archicad-message-ok').onclick=()=>$('#archicad-message-dialog').close();
+$('#user-data-export').onclick=async()=>{const button=$('#user-data-export'),status=$('#user-data-status');button.disabled=true;status.textContent='Створення резервної копії…';try{const result=await window.ekp.exportUserData();if(result.canceled){status.textContent='Експорт скасовано.';return;}$('#user-data-dialog').close();showArchicadMessage('Резервну копію створено',`Дані користувача збережено у файл:\n${result.packagePath}`);}catch(error){status.textContent=`Не вдалося створити копію: ${error?.message||error}`;}finally{button.disabled=false;}};
+$('#user-data-import').onclick=async()=>{if(!await confirmUserDataImport())return;const button=$('#user-data-import'),status=$('#user-data-status');button.disabled=true;status.textContent='Перевірка та відновлення даних…';try{const result=await window.ekp.importUserData();if(result.canceled){status.textContent='Імпорт скасовано.';return;}[state,notes,importedNotes]=await Promise.all([window.ekp.state(),window.ekp.notes(),window.ekp.importedNotes()]);selectedNote=null;selectedArchicadProjectId=null;viewHistory=[];viewHistoryIndex=-1;$('#user-data-dialog').close();renderSidebar();renderDatabaseUpdate();navigate('dbn');showArchicadMessage('Дані відновлено',`Імпортовано ${result.fileCount} файлів. Історію, закріплення, нотатки, PDF-закладки та проєкти замінено даними з резервної копії.`);}catch(error){status.textContent=`Не вдалося імпортувати дані: ${error?.message||error}`;}finally{button.disabled=false;}};
 $('#export-select-all').onclick=()=>{const boxes=[...document.querySelectorAll('#export-notes-list input[type="checkbox"]')];const select=boxes.some(box=>!box.checked);boxes.forEach(box=>box.checked=select);$('#export-select-all').textContent=select?'Зняти вибір':'Вибрати всі';};
 $('#export-create').onclick=async()=>{const button=$('#export-create');const status=$('#export-status');const noteIds=[...document.querySelectorAll('#export-notes-list input:checked')].map(input=>input.value);if(!noteIds.length){status.textContent='Оберіть хоча б одну нотатку.';return;}button.disabled=true;status.textContent='Підготовка файла…';try{const result=await window.ekp.exportNotes({noteIds,libraryName:$('#library-name').value,author:$('#library-author').value});if(result.canceled){status.textContent='Створення файла скасовано.';return;}$('#export-dialog').close();$('#export-success-message').textContent=`Експортовано ${result.count} нотаток у файл ${result.packagePath}`;$('#export-success-dialog').showModal();}catch(error){status.textContent=`Помилка: ${error?.message||error}`;}finally{button.disabled=false;}};
 $('#minimize').onclick=()=>window.ekp.window.minimize();$('#maximize').onclick=()=>window.ekp.window.maximize();$('#close').onclick=()=>window.ekp.window.close();
-(async()=>{[state,catalog,notes,importedNotes,catalogMetadata]=await Promise.all([window.ekp.state(),window.ekp.catalog(),window.ekp.notes(),window.ekp.importedNotes(),window.ekp.catalogMetadata()]);renderSidebar();renderDatabaseUpdate();navigate('dbn');setTimeout(()=>checkProgramUpdate(false),1200);})();
+(async()=>{let appVersion;[state,catalog,notes,importedNotes,catalogMetadata,appVersion]=await Promise.all([window.ekp.state(),window.ekp.catalog(),window.ekp.notes(),window.ekp.importedNotes(),window.ekp.catalogMetadata(),window.ekp.appVersion()]);$('#about-version').textContent=appVersion;renderSidebar();renderDatabaseUpdate();navigate('dbn');setTimeout(()=>checkProgramUpdate(false),1200);})();
