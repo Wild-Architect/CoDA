@@ -126,8 +126,14 @@ async function fetchManifest() {
     const text = await (await fetchDownload(MANIFEST_URL)).text();
     manifest = JSON.parse(text.replace(/^\uFEFF/, ''));
   } catch {
-    try { manifest = JSON.parse((await readOneDriveTextWithBrowser(MANIFEST_URL)).replace(/^\uFEFF/, '')); }
-    catch { throw new Error('Не вдалося прочитати опублікований manifest.json через OneDrive.'); }
+    const host = new URL(MANIFEST_URL).hostname;
+    const isOneDrive = host === '1drv.ms' || host.endsWith('.sharepoint.com') || host.includes('onedrive.live.com');
+    if (isOneDrive) {
+      try { manifest = JSON.parse((await readOneDriveTextWithBrowser(MANIFEST_URL)).replace(/^\uFEFF/, '')); }
+      catch { throw new Error('Не вдалося завантажити відомості про оновлення бази. Перевірте підключення до інтернету та повторіть спробу.'); }
+    } else {
+      throw new Error('Не вдалося завантажити відомості про оновлення бази. Перевірте підключення до інтернету та повторіть спробу.');
+    }
   }
   if (manifest.schemaVersion !== 1 || !manifest.latestVersion || !manifest.fullPackage) throw new Error('Формат manifest.json не підтримується.');
   return manifest;
@@ -445,22 +451,27 @@ async function listPdfBookmarks(documentId) {
   const list = store.documents[safePdfDocumentId(documentId)];
   return Array.isArray(list) ? list : [];
 }
-async function addPdfBookmark(payload) {
-  await ensureDataDirs();
-  const documentId = safePdfDocumentId(payload?.documentId);
-  const page = Number(payload?.page);
-  const start = Number(payload?.start);
-  const end = Number(payload?.end);
-  const text = String(payload?.text || '').trim().slice(0, 4000);
-  const label = String(payload?.label || '').trim().slice(0, 120) || text.slice(0, 60) || 'Закладка';
-  const colors = new Set(['yellow', 'green', 'blue', 'pink', 'orange']);
-  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(start) || start < 0 || !Number.isInteger(end) || end <= start || !text) throw new Error('Некоректні дані текстової закладки');
-  const geometry = Array.isArray(payload?.geometry) ? payload.geometry.slice(0, 1000).map(rect => {
+function normalizePdfBookmarkGeometry(value, limit = 1000) {
+  return Array.isArray(value) ? value.slice(0, limit).map(rect => {
     const x = Number(rect?.x), y = Number(rect?.y), width = Number(rect?.width), height = Number(rect?.height);
     if (![x, y, width, height].every(Number.isFinite) || x < 0 || y < 0 || width <= 0 || height <= 0 || x >= 1 || y >= 1) return null;
     return { x, y, width: Math.min(width, 1 - x), height: Math.min(height, 1 - y) };
   }).filter(Boolean) : [];
-  const bookmark = { id: crypto.randomUUID(), page, start, end, text, label, color: colors.has(payload?.color) ? payload.color : 'yellow', geometry, geometryVersion: geometry.length ? 2 : 0, createdAt: new Date().toISOString() };
+}
+async function addPdfBookmark(payload) {
+  await ensureDataDirs();
+  const documentId = safePdfDocumentId(payload?.documentId);
+  const rawSegments = Array.isArray(payload?.segments) && payload.segments.length ? payload.segments : [{ page: payload?.page, start: payload?.start, end: payload?.end, geometry: payload?.geometry }];
+  if (rawSegments.length > 200) throw new Error('Закладка охоплює забагато сторінок');
+  const segments = rawSegments.map(segment => ({ page: Number(segment?.page), start: Number(segment?.start), end: Number(segment?.end), geometry: normalizePdfBookmarkGeometry(segment?.geometry) })).sort((a, b) => a.page - b.page);
+  if (!segments.length || segments.some((segment, index) => !Number.isInteger(segment.page) || segment.page < 1 || !Number.isInteger(segment.start) || segment.start < 0 || !Number.isInteger(segment.end) || segment.end <= segment.start || (index > 0 && segments[index - 1].page === segment.page))) throw new Error('Некоректні дані текстової закладки');
+  if (segments.reduce((sum, segment) => sum + segment.geometry.length, 0) > 5000) throw new Error('Закладка містить забагато фрагментів виділення');
+  const text = String(payload?.text || '').trim().slice(0, 20000);
+  const label = String(payload?.label || '').trim().slice(0, 120) || text.slice(0, 60) || 'Закладка';
+  const colors = new Set(['yellow', 'green', 'blue', 'pink', 'orange']);
+  if (!text) throw new Error('Некоректні дані текстової закладки');
+  const first = segments[0], last = segments.at(-1);
+  const bookmark = { id: crypto.randomUUID(), page: first.page, endPage: last.page, start: first.start, end: first.end, text, label, color: colors.has(payload?.color) ? payload.color : 'yellow', geometry: first.geometry, geometryVersion: segments.some(segment => segment.geometry.length) ? 3 : 0, segments, createdAt: new Date().toISOString() };
   const store = await readPdfBookmarkStore();
   const list = Array.isArray(store.documents[documentId]) ? store.documents[documentId] : [];
   store.documents[documentId] = [bookmark, ...list];

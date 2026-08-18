@@ -118,6 +118,27 @@ function formatCatalogDate(value) {
   const months = ['січня','лютого','березня','квітня','травня','червня','липня','серпня','вересня','жовтня','листопада','грудня'];
   return `${Number(match[3])} ${months[Number(match[2]) - 1]} ${match[1]} року`;
 }
+function readableError(error, fallback = 'Сталася невідома помилка.') {
+  let message = String(error?.message || error || '').trim();
+  message = message.replace(/^Error invoking remote method ['"][^'"]+['"]:\s*/i, '');
+  message = message.replace(/^Error:\s*/i, '');
+  return message || fallback;
+}
+function readableReleaseNotes(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (!/<\/?[a-z][^>]*>/i.test(raw)) return raw;
+  const parsed = new DOMParser().parseFromString(raw, 'text/html');
+  parsed.querySelectorAll('br').forEach(node => node.replaceWith('\n'));
+  parsed.querySelectorAll('li').forEach(node => { node.prepend('• '); node.append('\n'); });
+  parsed.querySelectorAll('h1,h2,h3,h4,h5,h6,p,div,ul,ol').forEach(node => node.append('\n'));
+  return String(parsed.body.textContent || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 function renderDatabaseUpdate() {
   const update = $('#database-update');
   update.innerHTML = '<span>Дата оновлення бази будівельних норм</span><strong></strong>';
@@ -139,7 +160,7 @@ async function checkDatabaseUpdate() {
     pendingDatabaseManifest = result.manifest;
     if (result.updateAvailable) showDatabaseUpdateDialog('Доступне оновлення', `Встановлена версія: ${result.currentVersion}\nНова версія: ${result.latestVersion}\nДата бази: ${formatCatalogDate(result.databaseDate)}`, true);
     else showDatabaseUpdateDialog('База актуальна', `Установлена найновіша версія ${result.currentVersion}.`);
-  } catch (error) { pendingDatabaseManifest = null; showDatabaseUpdateDialog('Не вдалося перевірити базу', error?.message || String(error)); }
+  } catch (error) { pendingDatabaseManifest = null; showDatabaseUpdateDialog('Не вдалося перевірити базу', readableError(error)); }
   finally { button.disabled = false; spinner.classList.remove('spinning'); }
 }
 async function installDatabaseUpdate() {
@@ -153,7 +174,7 @@ async function installDatabaseUpdate() {
     renderDatabaseUpdate(); renderSidebar();
     showDatabaseUpdateDialog('Оновлення завершено', `Базу оновлено до версії ${result.version}.`);
     pendingDatabaseManifest = null;
-  } catch (error) { showDatabaseUpdateDialog('Оновлення не встановлено', `${error?.message || String(error)}\n\nЛокальна база залишилася без змін.`); }
+  } catch (error) { showDatabaseUpdateDialog('Оновлення не встановлено', `${readableError(error)}\n\nЛокальна база залишилася без змін.`); }
   finally { stopProgress(); install.disabled = false; cancel.disabled = false; }
 }
 function showProgramUpdateDialog(title, message, canInstall = false) {
@@ -172,7 +193,8 @@ async function checkProgramUpdate(manual = false) {
     const result = await window.ekp.checkProgramUpdate();
     if (result.updateAvailable) {
       pendingProgramUpdate = result;
-      const notes = result.releaseNotes ? `\n\n${result.releaseNotes}` : '';
+      const releaseNotes = readableReleaseNotes(result.releaseNotes);
+      const notes = releaseNotes ? `\n\n${releaseNotes}` : '';
       showProgramUpdateDialog('Доступна нова версія CoDA', `Встановлена версія: ${result.currentVersion}\nНова версія: ${result.latestVersion}${notes}`, true);
     } else if (manual) {
       pendingProgramUpdate = null;
@@ -180,7 +202,7 @@ async function checkProgramUpdate(manual = false) {
     }
   } catch (error) {
     pendingProgramUpdate = null;
-    if (manual) showProgramUpdateDialog('Не вдалося перевірити оновлення', error?.message || String(error));
+    if (manual) showProgramUpdateDialog('Не вдалося перевірити оновлення', readableError(error));
   }
 }
 async function installProgramUpdate() {
@@ -199,7 +221,7 @@ async function installProgramUpdate() {
   });
   try { await window.ekp.installProgramUpdate(); }
   catch (error) {
-    showProgramUpdateDialog('Оновлення не встановлено', error?.message || String(error), true);
+    showProgramUpdateDialog('Оновлення не встановлено', readableError(error), true);
     install.disabled = false; cancel.disabled = false; close.disabled = false;
   } finally { stopProgress(); }
 }
@@ -347,7 +369,6 @@ function currentPdfSelections() {
   const startPage=Number(startLayer.closest('[data-pdf-page]')?.dataset.pdfPage),endPage=Number(endLayer.closest('[data-pdf-page]')?.dataset.pdfPage);if(!startPage||!endPage||endPage<startPage)return[];
   return[...document.querySelectorAll('.textLayer')].map(layer=>{const shell=layer.closest('[data-pdf-page]'),page=Number(shell?.dataset.pdfPage);if(!shell||page<startPage||page>endPage)return null;const map=pdfTextMap(layer),start=layer===startLayer?pdfBoundaryOffset(map,range.startContainer,range.startOffset):0,end=layer===endLayer?pdfBoundaryOffset(map,range.endContainer,range.endOffset):map.text.length;return start>=0&&end>start?{selection,range,layer,shell,map,start,end,page}:null;}).filter(Boolean);
 }
-function currentPdfSelection(){const selected=currentPdfSelections();return selected.length===1?selected[0]:null;}
 function renderPdfNativeSelection() {
   document.querySelectorAll('.pdf-mark-selection').forEach(mark=>mark.remove());if(!activePdf)return;
   const selected=currentPdfSelections();activePdf.nativeSelection=selected.map(item=>({page:item.page,start:item.start,end:item.end}));
@@ -363,7 +384,7 @@ function pdfAppendInlineText(element,text,className='') {
 }
 function renderPdfInlineMarks(pageNumber) {
   const map=activePdf?.pageTextMaps?.get(pageNumber);if(!map)return;
-  const marks=[...activePdf.bookmarks.filter(item=>item.page===pageNumber).map((item,index)=>({start:item.start,end:item.end,className:`pdf-inline-${item.color}`,priority:10-index/10000})),...activePdf.searchMatches.filter(item=>item.page===pageNumber).map(item=>{const index=activePdf.searchMatches.indexOf(item);return{start:item.start,end:item.end,className:index===activePdf.searchIndex?'pdf-inline-search-current':'pdf-inline-search',priority:index===activePdf.searchIndex?30:20};})];
+  const marks=[...activePdf.bookmarks.flatMap((item,index)=>pdfBookmarkSegments(item).filter(segment=>segment.page===pageNumber).map(segment=>({start:segment.start,end:segment.end,className:`pdf-inline-${item.color}`,priority:10-index/10000}))),...activePdf.searchMatches.filter(item=>item.page===pageNumber).map(item=>{const index=activePdf.searchMatches.indexOf(item);return{start:item.start,end:item.end,className:index===activePdf.searchIndex?'pdf-inline-search-current':'pdf-inline-search',priority:index===activePdf.searchIndex?30:20};})];
   map.items.forEach(item=>{
     const local=marks.filter(mark=>mark.end>item.start&&mark.start<item.end),boundaries=new Set([0,item.text.length]);local.forEach(mark=>{boundaries.add(Math.max(0,mark.start-item.start));boundaries.add(Math.min(item.text.length,mark.end-item.start));});const points=[...boundaries].sort((a,b)=>a-b);item.element.replaceChildren();
     for(let index=0;index<points.length-1;index++){const from=points[index],to=points[index+1],winner=local.filter(mark=>mark.start<item.start+to&&mark.end>item.start+from).sort((a,b)=>b.priority-a.priority)[0];pdfAppendInlineText(item.element,item.text.slice(from,to),winner?.className||'');}
@@ -376,19 +397,21 @@ function renderPdfPageMarks(pageNumber) {
   if(activePdf.nativeSelection?.some(item=>item.page===pageNumber)){const selected=currentPdfSelections().find(item=>item.page===pageNumber);if(selected)pdfDrawRects(shell,pdfRectsFromOffsets(shell,layer,selected.start,selected.end),'pdf-mark-selection');}
 }
 const pdfBookmarkColor=color=>({yellow:'#d7b900',green:'#39a85d',blue:'#278fdc',pink:'#d65491',orange:'#df7e20'})[color]||'#d7b900';
+function pdfBookmarkSegments(item){const segments=Array.isArray(item?.segments)&&item.segments.length?item.segments:[item];return segments.map(segment=>({page:Number(segment?.page),start:Number(segment?.start),end:Number(segment?.end),geometry:Array.isArray(segment?.geometry)?segment.geometry:[]})).filter(segment=>Number.isInteger(segment.page)&&segment.page>0&&Number.isInteger(segment.start)&&segment.start>=0&&Number.isInteger(segment.end)&&segment.end>segment.start).sort((a,b)=>a.page-b.page);}
+function pdfBookmarkPageLabel(item){const segments=pdfBookmarkSegments(item),first=segments[0]?.page||Number(item?.page)||1,last=segments.at(-1)?.page||first;return first===last?`Сторінка ${first}`:`Сторінки ${first}–${last}`;}
 function renderPdfBookmarksPanel() {
   if(!activePdf||!$('#pdf-bookmarks-list'))return;
-  $('#pdf-bookmarks-list').innerHTML=activePdf.bookmarks.length?activePdf.bookmarks.map(item=>`<button class="pdf-bookmark-item${activePdf.activeBookmarkId===item.id?' active':''}" data-pdf-bookmark="${escape(item.id)}" style="--bookmark-color:${pdfBookmarkColor(item.color)}" title="${escape(item.text)}"><strong>${escape(item.label)}</strong><span>Сторінка ${item.page} · ${escape(item.text)}</span><span class="pdf-bookmark-delete" data-delete-pdf-bookmark="${escape(item.id)}" title="Видалити">${icon('trash')}</span></button>`).join(''):'<div class="pdf-bookmark-empty">Виділіть текст у документі, оберіть колір і збережіть текстову закладку.</div>';
-  document.querySelectorAll('[data-pdf-bookmark]').forEach(button=>button.onclick=async()=>{const item=activePdf?.bookmarks.find(entry=>entry.id===button.dataset.pdfBookmark);if(!item)return;activePdf.activeBookmarkId=item.id;await scrollToPdfPage(item.page);renderPdfPageMarks(item.page);renderPdfBookmarksPanel();});
+  $('#pdf-bookmarks-list').innerHTML=activePdf.bookmarks.length?activePdf.bookmarks.map(item=>`<button class="pdf-bookmark-item${activePdf.activeBookmarkId===item.id?' active':''}" data-pdf-bookmark="${escape(item.id)}" style="--bookmark-color:${pdfBookmarkColor(item.color)}" title="${escape(item.text)}"><strong>${escape(item.label)}</strong><span>${pdfBookmarkPageLabel(item)} · ${escape(item.text)}</span><span class="pdf-bookmark-delete" data-delete-pdf-bookmark="${escape(item.id)}" title="Видалити">${icon('trash')}</span></button>`).join(''):'<div class="pdf-bookmark-empty">Виділіть текст у документі, оберіть колір і збережіть текстову закладку.</div>';
+  document.querySelectorAll('[data-pdf-bookmark]').forEach(button=>button.onclick=async()=>{const item=activePdf?.bookmarks.find(entry=>entry.id===button.dataset.pdfBookmark),segments=pdfBookmarkSegments(item);if(!item||!segments.length)return;activePdf.activeBookmarkId=item.id;await scrollToPdfPage(segments[0].page);segments.forEach(segment=>renderPdfPageMarks(segment.page));renderPdfBookmarksPanel();});
   document.querySelectorAll('[data-delete-pdf-bookmark]').forEach(button=>button.onclick=async event=>{event.stopPropagation();const id=button.dataset.deletePdfBookmark;await window.ekp.deletePdfBookmark({documentId:activePdf.documentId,id});activePdf.bookmarks=activePdf.bookmarks.filter(item=>item.id!==id);document.querySelectorAll('[data-pdf-page]').forEach(shell=>renderPdfPageMarks(Number(shell.dataset.pdfPage)));renderPdfBookmarksPanel();});
 }
 function clearPdfSelectionEditor(){if(activePdf)activePdf.selection=null;if($('#pdf-selection-editor'))$('#pdf-selection-editor').hidden=true;}
 function capturePdfSelection(){
-  const selected=currentPdfSelection();if(!selected)return;let{start,end}=selected;const raw=selected.map.text.slice(start,end),leading=raw.length-raw.trimStart().length,trailing=raw.length-raw.trimEnd().length;start+=leading;end-=trailing;const text=selected.map.text.slice(start,end).trim();if(!text)return;
-  const geometry=pdfNormalizeGeometry(selected.shell,pdfRectsFromOffsets(selected.shell,selected.layer,start,end));if(!geometry.length)return;
-  activePdf.selection={page:selected.page,start,end,text:text.slice(0,4000),color:'yellow',geometry};$('#pdf-selection-preview').textContent=text;$('#pdf-bookmark-label').value='';$('#pdf-selection-editor').hidden=false;document.querySelectorAll('.pdf-color').forEach(button=>button.classList.toggle('active',button.dataset.color==='yellow'));
+  const selected=currentPdfSelections(),segments=[],texts=[];if(!selected.length)return;
+  selected.forEach(item=>{let{start,end}=item;const raw=item.map.text.slice(start,end),leading=raw.length-raw.trimStart().length,trailing=raw.length-raw.trimEnd().length;start+=leading;end-=trailing;const text=item.map.text.slice(start,end).trim();if(!text)return;const geometry=pdfNormalizeGeometry(item.shell,pdfRectsFromOffsets(item.shell,item.layer,start,end));if(!geometry.length)return;segments.push({page:item.page,start,end,geometry});texts.push(text);});
+  if(!segments.length)return;const text=texts.join('\n\n').slice(0,20000),first=segments[0],last=segments.at(-1);activePdf.selection={page:first.page,endPage:last.page,start:first.start,end:first.end,geometry:first.geometry,segments,text,color:'yellow'};$('#pdf-selection-caption').textContent=segments.length===1?'Виділений текст':`Виділений текст · сторінки ${first.page}–${last.page}`;$('#pdf-selection-preview').textContent=text;$('#pdf-bookmark-label').value='';$('#pdf-selection-editor').hidden=false;document.querySelectorAll('.pdf-color').forEach(button=>button.classList.toggle('active',button.dataset.color==='yellow'));
 }
-async function savePdfSelectionBookmark(){if(!activePdf?.selection)return;const bookmark=await window.ekp.addPdfBookmark({documentId:activePdf.documentId,...activePdf.selection,label:$('#pdf-bookmark-label').value});activePdf.bookmarks.unshift(bookmark);activePdf.activeBookmarkId=bookmark.id;clearPdfSelectionEditor();window.getSelection()?.removeAllRanges();renderPdfPageMarks(bookmark.page);renderPdfBookmarksPanel();}
+async function savePdfSelectionBookmark(){if(!activePdf?.selection)return;const bookmark=await window.ekp.addPdfBookmark({documentId:activePdf.documentId,...activePdf.selection,label:$('#pdf-bookmark-label').value});activePdf.bookmarks.unshift(bookmark);activePdf.activeBookmarkId=bookmark.id;clearPdfSelectionEditor();window.getSelection()?.removeAllRanges();pdfBookmarkSegments(bookmark).forEach(segment=>renderPdfPageMarks(segment.page));renderPdfBookmarksPanel();}
 async function indexPdfText(){if(!activePdf?.document)return;const session=activePdf;for(let page=1;page<=session.document.numPages;page++){if(session.pageTexts.has(page))continue;const pdfPage=await session.document.getPage(page),content=await pdfPage.getTextContent();if(activePdf!==session)return;session.pageTexts.set(page,content.items.map(item=>item.str||'').join(''));}}
 async function goToPdfSearchMatch(index){if(!activePdf?.searchMatches.length)return;activePdf.searchIndex=(index+activePdf.searchMatches.length)%activePdf.searchMatches.length;const match=activePdf.searchMatches[activePdf.searchIndex];await scrollToPdfPage(match.page);$('#pdf-search-count').textContent=`${activePdf.searchIndex+1} / ${activePdf.searchMatches.length}`;document.querySelectorAll('[data-pdf-page]').forEach(shell=>renderPdfPageMarks(Number(shell.dataset.pdfPage)));}
 async function performPdfSearch(){if(!activePdf?.document)return;const query=$('#pdf-search-input').value.trim(),token=++activePdf.searchToken;activePdf.searchMatches=[];activePdf.searchIndex=-1;if(!query){$('#pdf-search-count').textContent='';document.querySelectorAll('[data-pdf-page]').forEach(shell=>renderPdfPageMarks(Number(shell.dataset.pdfPage)));return;}$('#pdf-search-count').textContent='Пошук…';await indexPdfText();if(!activePdf||token!==activePdf.searchToken)return;const needle=query.toLocaleLowerCase('uk');for(const[page,text]of activePdf.pageTexts){const haystack=text.toLocaleLowerCase('uk');let start=0,index;while((index=haystack.indexOf(needle,start))!==-1){activePdf.searchMatches.push({page,start:index,end:index+needle.length});start=index+Math.max(1,needle.length);if(activePdf.searchMatches.length>=5000)break;}}if(!activePdf.searchMatches.length){$('#pdf-search-count').textContent='0 збігів';return;}await goToPdfSearchMatch(0);}
@@ -512,7 +535,7 @@ async function renderPdfViewer(item) {
   const documentId = `${item.attachment ? 'attachment' : 'dbn'}:${item.path}`;
   activePdf = { item, documentId, document: null, defaultPageSize: null, pdfjs: null, pageNumber: 1, scale: 1.25, singleScale: 1.25, layout: 'single', rendered: new Set(), renderTasks: new Map(), textLayers: new Map(), pageTexts: new Map(), pageTextMaps: new Map(), bookmarks: [], selection: null, nativeSelection: [], selectionFrame: 0, activeBookmarkId: '', searchMatches: [], searchIndex: -1, searchToken: 0, observer: null, rightAlt: false, zoomWheelLocked: false };
   const backLabel = item.attachment ? 'До нотатки' : 'До каталогу';
-  page.innerHTML = head(item.number) + `<div class="pdf-viewer"><div class="pdf-toolbar"><button id="pdf-back" class="button">${icon('chevron-left')}<span>${backLabel}</span></button><div class="pdf-search"><div class="pdf-search-box">${icon('search')}<input id="pdf-search-input" class="pdf-search-input" placeholder="Пошук у документі"></div><span id="pdf-search-count" class="pdf-search-count"></span><button id="pdf-search-prev" class="pdf-icon-button" title="Попередній збіг">${icon('chevron-left')}</button><button id="pdf-search-next" class="pdf-icon-button" title="Наступний збіг">${icon('chevron-right')}</button></div><div class="pdf-toolbar-group"><button id="pdf-prev" class="pdf-icon-button" title="Попередня сторінка">${icon('chevron-left')}</button><input id="pdf-page-number" class="pdf-page-input" type="number" min="1" value="1"><span id="pdf-page-count">/ —</span><button id="pdf-next" class="pdf-icon-button" title="Наступна сторінка">${icon('chevron-right')}</button></div><div class="pdf-layout-switch" aria-label="Режим відображення сторінок"><button id="pdf-layout-single" class="pdf-icon-button active" title="Одна сторінка" aria-pressed="true">${icon('page-single')}</button><button id="pdf-layout-spread" class="pdf-icon-button" title="Дві сторінки поруч" aria-pressed="false">${icon('pages-two')}</button></div><div class="pdf-toolbar-group"><button id="pdf-zoom-out" class="pdf-icon-button" title="Зменшити">${icon('minus')}</button><span id="pdf-zoom-value">125%</span><button id="pdf-zoom-in" class="pdf-icon-button" title="Збільшити">${icon('plus')}</button></div><button id="pdf-open-system" class="button">${icon('external-link')}<span>Відкрити окремо</span></button></div><div class="pdf-workspace"><div id="pdf-stage" class="pdf-stage"><div id="pdf-status" class="pdf-status">Завантаження документа…</div></div><aside class="pdf-bookmarks-panel"><div class="pdf-bookmarks-head">${icon('bookmark')}<span>Текстові закладки</span></div><div id="pdf-selection-editor" class="pdf-selection-editor" hidden><div class="pdf-selection-caption">Виділений текст</div><div id="pdf-selection-preview" class="pdf-selection-preview"></div><input id="pdf-bookmark-label" class="pdf-bookmark-label" maxlength="120" placeholder="Ключове слово"><div class="pdf-color-row"><button class="pdf-color active" data-color="yellow" title="Жовтий"></button><button class="pdf-color" data-color="green" title="Зелений"></button><button class="pdf-color" data-color="blue" title="Блакитний"></button><button class="pdf-color" data-color="pink" title="Рожевий"></button><button class="pdf-color" data-color="orange" title="Помаранчевий"></button></div><div class="pdf-selection-actions"><button id="pdf-bookmark-cancel" class="button">Скасувати</button><button id="pdf-bookmark-save" class="button primary">Зберегти</button></div></div><div id="pdf-bookmarks-list" class="pdf-bookmarks-list"></div></aside></div></div>`;
+  page.innerHTML = head(item.number) + `<div class="pdf-viewer"><div class="pdf-toolbar"><button id="pdf-back" class="button">${icon('chevron-left')}<span>${backLabel}</span></button><div class="pdf-search"><div class="pdf-search-box">${icon('search')}<input id="pdf-search-input" class="pdf-search-input" placeholder="Пошук у документі"></div><span id="pdf-search-count" class="pdf-search-count"></span><button id="pdf-search-prev" class="pdf-icon-button" title="Попередній збіг">${icon('chevron-left')}</button><button id="pdf-search-next" class="pdf-icon-button" title="Наступний збіг">${icon('chevron-right')}</button></div><div class="pdf-toolbar-group"><button id="pdf-prev" class="pdf-icon-button" title="Попередня сторінка">${icon('chevron-left')}</button><input id="pdf-page-number" class="pdf-page-input" type="number" min="1" value="1"><span id="pdf-page-count">/ —</span><button id="pdf-next" class="pdf-icon-button" title="Наступна сторінка">${icon('chevron-right')}</button></div><div class="pdf-layout-switch" aria-label="Режим відображення сторінок"><button id="pdf-layout-single" class="pdf-icon-button active" title="Одна сторінка" aria-pressed="true">${icon('page-single')}</button><button id="pdf-layout-spread" class="pdf-icon-button" title="Дві сторінки поруч" aria-pressed="false">${icon('pages-two')}</button></div><div class="pdf-toolbar-group"><button id="pdf-zoom-out" class="pdf-icon-button" title="Зменшити">${icon('minus')}</button><span id="pdf-zoom-value">125%</span><button id="pdf-zoom-in" class="pdf-icon-button" title="Збільшити">${icon('plus')}</button></div><button id="pdf-open-system" class="button">${icon('external-link')}<span>Відкрити окремо</span></button></div><div class="pdf-workspace"><div id="pdf-stage" class="pdf-stage"><div id="pdf-status" class="pdf-status">Завантаження документа…</div></div><aside class="pdf-bookmarks-panel"><div class="pdf-bookmarks-head">${icon('bookmark')}<span>Текстові закладки</span></div><div id="pdf-selection-editor" class="pdf-selection-editor" hidden><div id="pdf-selection-caption" class="pdf-selection-caption">Виділений текст</div><div id="pdf-selection-preview" class="pdf-selection-preview"></div><input id="pdf-bookmark-label" class="pdf-bookmark-label" maxlength="120" placeholder="Ключове слово"><div class="pdf-color-row"><button class="pdf-color active" data-color="yellow" title="Жовтий"></button><button class="pdf-color" data-color="green" title="Зелений"></button><button class="pdf-color" data-color="blue" title="Блакитний"></button><button class="pdf-color" data-color="pink" title="Рожевий"></button><button class="pdf-color" data-color="orange" title="Помаранчевий"></button></div><div class="pdf-selection-actions"><button id="pdf-bookmark-cancel" class="button">Скасувати</button><button id="pdf-bookmark-save" class="button primary">Зберегти</button></div></div><div id="pdf-bookmarks-list" class="pdf-bookmarks-list"></div></aside></div></div>`;
   $('#pdf-back').onclick = () => item.attachment ? moveHistory(-1) : navigate('dbn');
   $('#pdf-open-system').onclick = () => item.attachment ? window.ekp.openFile(item.path) : window.ekp.openDbn(item.path);
   $('#pdf-prev').onclick = () => scrollToPdfPage(activePdf.pageNumber - 1);
