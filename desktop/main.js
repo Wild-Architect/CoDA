@@ -9,6 +9,8 @@ const XLSX = require('xlsx');
 const { autoUpdater } = require('electron-updater');
 const archicad = require('./archicad-service');
 const archicadProjects = require('./archicad-projects');
+const edessbProjects = require('./edessb-projects');
+const materialsLibrary = require('./materials-library');
 
 const execFileAsync = promisify(execFile);
 const MANIFEST_URL = 'https://raw.githubusercontent.com/Wild-Architect/CoDA-Database/main/manifest.json';
@@ -339,7 +341,23 @@ async function ensureDataDirs() { await Promise.all([fs.mkdir(notesDir, { recurs
 async function readJson(file, fallback) { try { return JSON.parse(await fs.readFile(file, 'utf8')); } catch { return fallback; } }
 async function writeJson(file, value) { await fs.writeFile(file, JSON.stringify(value, null, 2), 'utf8'); }
 const USER_DATA_ARCHIVE_KIND = 'CoDA User Data';
-const USER_DATA_ENTRIES = ['ui_state.json', 'pdf_bookmarks.json', 'notes', 'imported_notes', 'attachments', 'archicad_projects'];
+const USER_DATA_GROUPS = Object.freeze([
+  { id: 'activity', label: 'Закріплені, недавні та налаштування', description: 'Тема, закріплені й нещодавно відкриті ДБН та нотатки.', entries: ['ui_state.json'] },
+  { id: 'pdf-bookmarks', label: 'Закладки у PDF ДБН', description: 'Кольорові текстові закладки у документах ДБН.', entries: ['pdf_bookmarks.json'] },
+  { id: 'notes', label: 'Нотатки та вкладення', description: 'Мої й імпортовані нотатки разом із прикріпленими файлами.', entries: ['notes', 'imported_notes', 'attachments'] },
+  { id: 'archicad', label: 'Проєкти Archicad / Excel', description: 'Локальні проєкти й створені Excel-файли.', entries: ['archicad_projects'] },
+  { id: 'edessb', label: 'База документів ЄДЕССБ', description: 'Проєкти, посилання, редакції та окремо збережені PDF.', entries: ['edessb_projects', 'edessb_documents'] },
+  { id: 'materials', label: 'База будівельних матеріалів', description: 'Єдиний Excel із базовими й користувацькими матеріалами та прикріпленими файлами.', entries: ['materials_database.xlsx', 'materials_attachments', 'user_materials.json'] },
+]);
+const USER_DATA_ENTRIES = [...new Set(USER_DATA_GROUPS.flatMap(group => group.entries))];
+let pendingUserDataImportPath = '';
+function selectedUserDataGroups(groupIds, allowed = USER_DATA_GROUPS) {
+  const requested = new Set(Array.isArray(groupIds) ? groupIds.map(String) : []);
+  const groups = allowed.filter(group => requested.has(group.id));
+  if (!groups.length) throw new Error('Оберіть хоча б одну категорію даних.');
+  return groups;
+}
+function groupEntries(groups) { return [...new Set(groups.flatMap(group => group.entries))]; }
 async function copyUserDataEntry(source, target) {
   const stat = await fs.lstat(source).catch(() => null);
   if (!stat) return false;
@@ -372,7 +390,8 @@ function archiveEntryAllowed(relative) {
   const normalized = String(relative || '').replaceAll('\\', '/');
   return normalized && !normalized.startsWith('/') && !normalized.split('/').includes('..') && USER_DATA_ENTRIES.includes(normalized.split('/')[0]);
 }
-async function exportUserDataArchive() {
+async function exportUserDataArchive(groupIds) {
+  const groups = selectedUserDataGroups(groupIds);
   const date = new Date().toISOString().slice(0, 10);
   const selected = await dialog.showSaveDialog({ title: 'Зберегти дані користувача CoDA', defaultPath: `CoDA-${date}.codasaves`, filters: [{ name: 'Резервна копія CoDA', extensions: ['codasaves'] }] });
   if (selected.canceled || !selected.filePath) return { canceled: true };
@@ -382,9 +401,9 @@ async function exportUserDataArchive() {
     const stage = path.join(tempRoot, 'archive'), dataRoot = path.join(stage, 'data');
     await fs.mkdir(dataRoot, { recursive: true });
     const entries = [];
-    for (const entry of USER_DATA_ENTRIES) if (await copyUserDataEntry(path.join(writableDataDir, entry), path.join(dataRoot, entry))) entries.push(entry);
+    for (const entry of groupEntries(groups)) if (await copyUserDataEntry(path.join(writableDataDir, entry), path.join(dataRoot, entry))) entries.push(entry);
     const files = await archiveFileList(dataRoot);
-    await writeJson(path.join(stage, 'manifest.json'), { schemaVersion: 1, kind: USER_DATA_ARCHIVE_KIND, appVersion: app.getVersion(), exportedAt: new Date().toISOString(), entries, files });
+    await writeJson(path.join(stage, 'manifest.json'), { schemaVersion: 1, kind: USER_DATA_ARCHIVE_KIND, appVersion: app.getVersion(), exportedAt: new Date().toISOString(), groups: groups.map(group => group.id), entries, files });
     const temporaryZip = path.join(tempRoot, 'user-data.zip');
     const command = `Compress-Archive -Path '${path.join(stage, '*').replaceAll("'", "''")}' -DestinationPath '${temporaryZip.replaceAll("'", "''")}' -CompressionLevel Optimal -Force`;
     await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, maxBuffer: 1024 * 1024 });
@@ -414,27 +433,48 @@ async function validateUserDataArchive(folder) {
   }
   return { manifest, dataRoot };
 }
-async function importUserDataArchive() {
+function archiveGroups(manifest) {
+  const explicit = Array.isArray(manifest.groups) ? new Set(manifest.groups.map(String)) : null;
+  const entries = new Set(Array.isArray(manifest.entries) ? manifest.entries.map(String) : []);
+  return USER_DATA_GROUPS.filter(group => explicit ? explicit.has(group.id) : group.entries.some(entry => entries.has(entry)));
+}
+async function inspectUserDataArchive(filePath) {
+  const tempRoot = await fs.mkdtemp(path.join(writableDataDir, '.coda-saves-inspect-'));
+  try {
+    const archive = path.join(tempRoot, 'user-data.zip'), unpacked = path.join(tempRoot, 'unpacked');
+    await fs.copyFile(filePath, archive); await expandZip(archive, unpacked);
+    const { manifest } = await validateUserDataArchive(unpacked), groups = archiveGroups(manifest);
+    if (!groups.length) throw new Error('Резервна копія не містить підтримуваних категорій даних.');
+    return { groups, exportedAt: manifest.exportedAt || '', appVersion: manifest.appVersion || '' };
+  } finally { await fs.rm(tempRoot, { recursive: true, force: true }); }
+}
+async function prepareUserDataImport() {
   const selected = await dialog.showOpenDialog({ title: 'Імпортувати дані користувача CoDA', properties: ['openFile'], filters: [{ name: 'Резервна копія CoDA', extensions: ['codasaves'] }] });
   if (selected.canceled || !selected.filePaths[0]) return { canceled: true };
+  pendingUserDataImportPath = selected.filePaths[0];
+  return { canceled: false, ...await inspectUserDataArchive(pendingUserDataImportPath) };
+}
+async function importUserDataArchive(groupIds) {
+  if (!pendingUserDataImportPath) throw new Error('Спочатку оберіть файл резервної копії.');
   const tempRoot = await fs.mkdtemp(path.join(writableDataDir, '.coda-saves-import-'));
   try {
     const archive = path.join(tempRoot, 'user-data.zip'), unpacked = path.join(tempRoot, 'unpacked'), rollback = path.join(tempRoot, 'rollback');
-    await fs.copyFile(selected.filePaths[0], archive); await expandZip(archive, unpacked);
+    await fs.copyFile(pendingUserDataImportPath, archive); await expandZip(archive, unpacked);
     const { manifest, dataRoot } = await validateUserDataArchive(unpacked);
+    const groups = selectedUserDataGroups(groupIds, archiveGroups(manifest)), entries = groupEntries(groups);
     await fs.mkdir(rollback, { recursive: true });
-    for (const entry of USER_DATA_ENTRIES) await copyUserDataEntry(path.join(writableDataDir, entry), path.join(rollback, entry));
+    for (const entry of entries) await copyUserDataEntry(path.join(writableDataDir, entry), path.join(rollback, entry));
     try {
-      for (const entry of USER_DATA_ENTRIES) await fs.rm(path.join(writableDataDir, entry), { recursive: true, force: true });
-      for (const entry of USER_DATA_ENTRIES) await copyUserDataEntry(path.join(dataRoot, entry), path.join(writableDataDir, entry));
+      for (const entry of entries) await fs.rm(path.join(writableDataDir, entry), { recursive: true, force: true });
+      for (const entry of entries) await copyUserDataEntry(path.join(dataRoot, entry), path.join(writableDataDir, entry));
       await ensureDataDirs();
     } catch (error) {
-      for (const entry of USER_DATA_ENTRIES) await fs.rm(path.join(writableDataDir, entry), { recursive: true, force: true });
-      for (const entry of USER_DATA_ENTRIES) await copyUserDataEntry(path.join(rollback, entry), path.join(writableDataDir, entry));
+      for (const entry of entries) await fs.rm(path.join(writableDataDir, entry), { recursive: true, force: true });
+      for (const entry of entries) await copyUserDataEntry(path.join(rollback, entry), path.join(writableDataDir, entry));
       await ensureDataDirs(); throw error;
     }
-    return { canceled: false, importedAt: new Date().toISOString(), exportedAt: manifest.exportedAt || '', fileCount: manifest.files.length };
-  } finally { await fs.rm(tempRoot, { recursive: true, force: true }); }
+    return { canceled: false, importedAt: new Date().toISOString(), exportedAt: manifest.exportedAt || '', fileCount: manifest.files.filter(file => entries.includes(file.path.split('/')[0])).length, groups: groups.map(group => group.id) };
+  } finally { pendingUserDataImportPath = ''; await fs.rm(tempRoot, { recursive: true, force: true }); }
 }
 function safePdfDocumentId(value) {
   const id = String(value || '').trim();
@@ -545,10 +585,17 @@ function readCatalogMetadata() {
 function readUpdateHistory() {
   const workbook = XLSX.readFile(path.join(resourcesRoot, 'data', 'update_history.xlsx'), { cellDates: false });
   const sheet = workbook.Sheets['Історія оновлень'] || workbook.Sheets[workbook.SheetNames[0]];
+  const seen = new Set();
   return XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false }).map(row => ({
     version: String(row['Версія'] || '').trim(),
     description: String(row['Опис оновлення'] || '').trim(),
-  })).filter(item => item.version || item.description);
+  })).filter(item => {
+    if (!item.version && !item.description) return false;
+    const key = `${item.version}\u0000${item.description}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 async function listNotes() {
   await ensureDataDirs();
@@ -662,8 +709,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('app:version', () => app.getVersion());
   ipcMain.handle('state:get', () => readJson(stateFile, { theme: 'light', pinned_dbn: [], recent_dbn: [], recent_notes: [] }));
   ipcMain.handle('state:set', (_event, state) => writeJson(stateFile, state));
-  ipcMain.handle('user-data:export', exportUserDataArchive);
-  ipcMain.handle('user-data:import', importUserDataArchive);
+  ipcMain.handle('user-data:groups', () => USER_DATA_GROUPS);
+  ipcMain.handle('user-data:export', (_event, groupIds) => exportUserDataArchive(groupIds));
+  ipcMain.handle('user-data:prepare-import', prepareUserDataImport);
+  ipcMain.handle('user-data:import', (_event, groupIds) => importUserDataArchive(groupIds));
   ipcMain.handle('pdf-bookmarks:list', (_event, documentId) => listPdfBookmarks(documentId));
   ipcMain.handle('pdf-bookmarks:add', (_event, payload) => addPdfBookmark(payload));
   ipcMain.handle('pdf-bookmarks:delete', (_event, payload) => deletePdfBookmark(payload));
@@ -716,6 +765,49 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('archicad-projects:delete', (_event, projectId) => archicadProjects.deleteProject(writableDataDir, projectId));
   ipcMain.handle('archicad-projects:delete-file', (_event, payload) => archicadProjects.deleteProjectFile(writableDataDir, payload?.projectId, payload?.fileId));
+  ipcMain.handle('edessb:config', () => ({ portalLinks: edessbProjects.PORTAL_LINKS, documentTypes: edessbProjects.DOCUMENT_TYPES }));
+  ipcMain.handle('edessb-projects:list', () => edessbProjects.listProjects(writableDataDir));
+  ipcMain.handle('edessb-projects:create', (_event, payload) => edessbProjects.createProject(writableDataDir, payload));
+  ipcMain.handle('edessb-projects:delete', (_event, projectId) => edessbProjects.deleteProject(writableDataDir, projectId));
+  ipcMain.handle('edessb-projects:select-pdf', async () => {
+    const selected = await dialog.showOpenDialog({ title: 'Оберіть PDF-документ ЄДЕССБ', properties: ['openFile'], filters: [{ name: 'PDF-документ', extensions: ['pdf'] }] });
+    if (selected.canceled || !selected.filePaths[0]) return { canceled: true };
+    return { canceled: false, sourcePath: selected.filePaths[0], name: path.basename(selected.filePaths[0]) };
+  });
+  ipcMain.handle('edessb-projects:add-revision', (_event, payload) => edessbProjects.addRevision(writableDataDir, payload?.projectId, payload));
+  ipcMain.handle('edessb-projects:open-revision', async (_event, payload) => {
+    const { filePath } = await edessbProjects.getRevision(writableDataDir, payload?.projectId, payload?.type, payload?.number);
+    const error = await shell.openPath(filePath);
+    if (error) throw new Error(error);
+    return true;
+  });
+  ipcMain.handle('edessb-projects:delete-revision', (_event, payload) => edessbProjects.deleteRevision(writableDataDir, payload?.projectId, payload?.type, payload?.number));
+  ipcMain.handle('edessb-projects:open-documents-folder', async (_event, identifier) => {
+    if (identifier && !/^\d+$/.test(String(identifier))) throw new Error('Некоректний ідентифікаційний номер проєкту.');
+    const folder = identifier ? path.join(edessbProjects.documentsRoot(writableDataDir), String(identifier)) : edessbProjects.documentsRoot(writableDataDir);
+    await fs.mkdir(folder, { recursive: true }); const error = await shell.openPath(folder); if (error) throw new Error(error); return true;
+  });
+  ipcMain.handle('materials:list', () => materialsLibrary.listLibrary(resourcesRoot, writableDataDir, !app.isPackaged));
+  ipcMain.handle('materials:save', (_event, payload) => materialsLibrary.saveMaterial(resourcesRoot, writableDataDir, payload, !app.isPackaged));
+  ipcMain.handle('materials:delete', (_event, id) => materialsLibrary.deleteMaterial(resourcesRoot, writableDataDir, id, !app.isPackaged));
+  ipcMain.handle('materials:open-database', async () => {
+    const database = await materialsLibrary.ensureWorkingDatabase(resourcesRoot, writableDataDir), error = await shell.openPath(database.filePath);
+    if (error) throw new Error(error); return true;
+  });
+  ipcMain.handle('materials:select-files', async () => {
+    const selected = await dialog.showOpenDialog({ title: 'Прикріпити файли до матеріалу', properties: ['openFile', 'multiSelections'] });
+    if (selected.canceled) return [];
+    return selected.filePaths.map(sourcePath => ({ sourcePath, name: path.basename(sourcePath) }));
+  });
+  ipcMain.handle('materials:open-attachment', async (_event, storedName) => {
+    const target = materialsLibrary.materialAttachmentPath(writableDataDir, storedName);
+    if (!(await fs.stat(target).catch(() => null))?.isFile()) throw new Error('Прикріплений файл не знайдено.');
+    const error = await shell.openPath(target); if (error) throw new Error(error); return true;
+  });
+  ipcMain.handle('materials:open-attachments-folder', async () => {
+    const folder = materialsLibrary.attachmentsRoot(writableDataDir); await fs.mkdir(folder, { recursive: true });
+    const error = await shell.openPath(folder); if (error) throw new Error(error); return true;
+  });
   ipcMain.handle('notes:list', listNotes);
   ipcMain.handle('imported-notes:list', listImportedNotes);
   ipcMain.handle('imported-notes:delete', (_event, id) => deleteImportedNote(id));

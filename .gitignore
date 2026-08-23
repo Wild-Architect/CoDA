@@ -11,9 +11,12 @@ __pycache__/
 data/notes/
 data/imported_notes/
 data/archicad_projects/
+data/edessb_projects/
+data/edessb_documents/
 data/attachments/
 data/public_notes_library/
 data/ui_state.json
+data/user_materials.json
 data/database_update_state.json
 data/public_notes_state.json
 data/pdf_bookmarks.json
@@ -21,3 +24,6 @@ data/dbn_database/
 *.xlsx
 !data/dbn_catalog.xlsx
 !data/update_history.xlsx
+!data/materials_database.xlsx
+!data/materials_attachments/
+!data/materials_attachments/**

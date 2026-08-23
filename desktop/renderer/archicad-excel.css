@@ -1,4 +1,10 @@
 .archicad-page { max-width: 1120px; }
+.archicad-development-notice { display:flex; align-items:flex-start; gap:11px; margin:0 0 22px; padding:13px 15px; border:1px solid color-mix(in srgb,#d89222 48%,var(--line)); border-radius:12px; color:#86580f; background:color-mix(in srgb,#e7a536 12%,var(--surface)); }
+.archicad-development-notice > .icon { flex:0 0 auto; margin-top:2px; }
+.archicad-development-notice strong,.archicad-development-notice span { display:block; }
+.archicad-development-notice strong { margin-bottom:3px; }
+.archicad-development-notice span { font-size:13px; line-height:1.45; }
+[data-theme="dark"] .archicad-development-notice { color:#f0c878; }
 .archicad-page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
 .archicad-page-heading .subtitle { margin-bottom: 18px; }
 .archicad-page-heading .button { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }

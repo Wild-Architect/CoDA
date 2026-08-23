@@ -1,6 +1,6 @@
 {
   "name": "coda",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "productName": "CoDA",
   "description": "CoDA desktop workspace for codes, documents and architecture",
   "author": "Wild-Architect",
@@ -57,6 +57,14 @@
       {
         "from": "data/update_history.xlsx",
         "to": "data/update_history.xlsx"
+      },
+      {
+        "from": "data/materials_database.xlsx",
+        "to": "data/materials_database.xlsx"
+      },
+      {
+        "from": "data/materials_attachments",
+        "to": "data/materials_attachments"
       }
     ],
     "win": {
