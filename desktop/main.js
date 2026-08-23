@@ -775,6 +775,7 @@ app.whenReady().then(async () => {
     return { canceled: false, sourcePath: selected.filePaths[0], name: path.basename(selected.filePaths[0]) };
   });
   ipcMain.handle('edessb-projects:add-revision', (_event, payload) => edessbProjects.addRevision(writableDataDir, payload?.projectId, payload));
+  ipcMain.handle('edessb-projects:update-revision', (_event, payload) => edessbProjects.updateRevision(writableDataDir, payload?.projectId, payload));
   ipcMain.handle('edessb-projects:open-revision', async (_event, payload) => {
     const { filePath } = await edessbProjects.getRevision(writableDataDir, payload?.projectId, payload?.type, payload?.number);
     const error = await shell.openPath(filePath);

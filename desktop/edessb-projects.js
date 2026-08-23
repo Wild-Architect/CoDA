@@ -3,18 +3,18 @@ const path = require('path');
 const crypto = require('crypto');
 
 const PORTAL_LINKS = Object.freeze([
+  { id: 'design-task', label: 'Завдання на проєктування', url: 'https://admin.e-construction.gov.ua/edesb.design_tasks' },
   { id: 'project-documentation', label: 'Проєктна документація', url: 'https://admin.e-construction.gov.ua/project_documentation_employee_ARM' },
   { id: 'estimate-documentation', label: 'Кошторисна документація', url: 'https://admin.e-construction.gov.ua/estimate_construction_participant' },
-  { id: 'design-task', label: 'Завдання на проєктування', url: 'https://admin.e-construction.gov.ua/edesb.design_tasks' },
   { id: 'document-access', label: 'Запит на надання доступу до документу', url: 'https://admin.e-construction.gov.ua/doc_access_participant' },
   { id: 'price-analysis', label: 'Звіт з аналізу цін', url: 'https://admin.e-construction.gov.ua/price_analysis_report' },
   { id: 'material-resources', label: 'Перелік матеріальних ресурсів та їх ціни', url: 'https://admin.e-construction.gov.ua/edesb_protocol_approval_price' },
 ]);
 
 const DOCUMENT_TYPES = Object.freeze([
+  { id: 'design-task', label: 'Завдання на проєктування', short: 'ЗП' },
   { id: 'project-documentation', label: 'Проєктна документація', short: 'ПД' },
   { id: 'estimate-documentation', label: 'Кошторисна документація', short: 'КД' },
-  { id: 'design-task', label: 'Завдання на проєктування', short: 'ЗП' },
   { id: 'price-analysis', label: 'Звіт з аналізу цін', short: 'ЗАЦ' },
   { id: 'material-resources', label: 'Перелік матеріальних ресурсів та їх ціни', short: 'ПМР' },
   { id: 'expert-report', label: 'Експертний звіт', short: 'ЕЗ' },
@@ -99,6 +99,35 @@ async function addRevision(dataDir, projectId, payload) {
   const metadata = { ...project.metadata, updatedAt: now, documents: [...project.metadata.documents.filter(item => item.type !== type.id), document] };
   try { await writeJson(path.join(project.folder, 'project.json'), metadata); } catch (error) { if (target) await fs.rm(target, { force: true }); throw error; } return revision;
 }
+async function updateRevision(dataDir, projectId, payload) {
+  const project = await getProject(dataDir, projectId), type = safeDocumentType(payload?.type), revisionNumber = Number(payload?.number), group = project.metadata.documents.find(item => item.type === type.id), existing = group?.revisions.find(item => item.number === revisionNumber);
+  if (!Number.isInteger(revisionNumber) || revisionNumber < 1 || !existing) throw new Error('Редакцію документа не знайдено.');
+  const url = normalizeDocumentUrl(payload?.url), source = await validatePdf(payload?.sourcePath), removePdf = Boolean(payload?.removePdf);
+  const keepExistingPdf = Boolean(existing.storedName && !removePdf && !source);
+  if (!url && !source && !keepExistingPdf) throw new Error('Додайте посилання, PDF-файл або обидва.');
+  const documentDir = projectDocumentsDir(dataDir, project.metadata.identifier), storedName = source || keepExistingPdf ? `${project.metadata.identifier}-${type.short}${revisionNumber}.pdf` : '', target = storedName ? path.join(documentDir, storedName) : '';
+  const oldTarget = existing.storedName ? path.join(documentDir, path.basename(existing.storedName)) : '';
+  const backup = oldTarget && (source || removePdf) && (await fs.stat(oldTarget).catch(() => null))?.isFile() ? path.join(documentDir, `.${crypto.randomUUID()}.backup.pdf`) : '';
+  const staged = source ? path.join(documentDir, `.${crypto.randomUUID()}.staged.pdf`) : '';
+  let installedNew = false;
+  await fs.mkdir(documentDir, { recursive: true });
+  try {
+    if (source) await fs.copyFile(source, staged);
+    if (backup) await fs.rename(oldTarget, backup);
+    if (source) { await fs.rename(staged, target); installedNew = true; }
+    const now = new Date().toISOString(), revision = { ...existing, url, originalName: source ? path.basename(source) : storedName ? existing.originalName : '', storedName, updatedAt: now };
+    const document = { ...group, revisions: group.revisions.map(item => item.number === revisionNumber ? revision : item) };
+    const metadata = { ...project.metadata, updatedAt: now, documents: project.metadata.documents.map(item => item.type === type.id ? document : item) };
+    await writeJson(path.join(project.folder, 'project.json'), metadata);
+    if (backup) await fs.rm(backup, { force: true }).catch(() => null);
+    return revision;
+  } catch (error) {
+    if (staged) await fs.rm(staged, { force: true });
+    if (installedNew && target) await fs.rm(target, { force: true });
+    if (backup) await fs.rename(backup, oldTarget).catch(() => null);
+    throw error;
+  }
+}
 async function getRevision(dataDir, projectId, typeId, number) {
   const project = await getProject(dataDir, projectId), type = safeDocumentType(typeId), revision = project.metadata.documents.find(item => item.type === type.id)?.revisions.find(item => item.number === Number(number));
   if (!revision) throw new Error('Редакцію документа не знайдено.'); if (!revision.storedName) throw new Error('Для цієї редакції PDF-файл не додано.');
@@ -115,4 +144,4 @@ async function deleteProject(dataDir, id) {
   await Promise.all([fs.rm(project.folder, { recursive: true, force: true }), project.metadata.identifier ? fs.rm(projectDocumentsDir(dataDir, project.metadata.identifier), { recursive: true, force: true }) : Promise.resolve()]); return true;
 }
 
-module.exports = { DOCUMENT_TYPES, PORTAL_LINKS, addRevision, createProject, deleteProject, deleteRevision, documentsRoot, getRevision, listProjects };
+module.exports = { DOCUMENT_TYPES, PORTAL_LINKS, addRevision, createProject, deleteProject, deleteRevision, documentsRoot, getRevision, listProjects, updateRevision };
