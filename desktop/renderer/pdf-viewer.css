@@ -40,3 +40,18 @@
 .textLayer .pdf-inline-orange{background:rgba(239,139,45,.4)}
 .textLayer .pdf-inline-search{background:rgba(255,154,31,.45);outline:1px solid rgba(201,104,0,.45)}
 .textLayer .pdf-inline-search-current{background:rgba(35,139,229,.42);outline:2px solid var(--accent)}
+.pdf-search{min-width:320px}
+.pdf-search .button{min-height:34px;padding:6px 13px}
+.pdf-bookmarks-panel{width:320px;flex-basis:320px}
+.pdf-side-view{display:flex;flex:1;min-height:0;flex-direction:column}
+.pdf-side-view[hidden]{display:none}
+.pdf-search-summary{padding:0 16px 10px;color:var(--muted);font-size:12px;line-height:1.4}
+.pdf-search-results{flex:1;overflow:auto;padding:0 10px 12px}
+.pdf-search-result{display:block;width:100%;margin-bottom:8px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bubble);color:var(--text);text-align:left;cursor:pointer}
+.pdf-search-result:hover,.pdf-search-result.active{border-color:var(--accent);background:var(--hover)}
+.pdf-search-result-page{display:block;margin-bottom:5px;color:var(--muted);font-size:11px}
+.pdf-search-result-context{display:block;overflow-wrap:anywhere;white-space:pre-wrap;font-size:13px;line-height:1.45}
+.pdf-search-result-context strong{font-weight:800;color:var(--text)}
+.pdf-search-footer{padding:12px;border-top:1px solid var(--line)}
+.pdf-search-footer .button{width:100%}
+@media(max-width:1180px){.pdf-bookmarks-panel{width:280px;flex-basis:280px}.pdf-search{min-width:260px}}

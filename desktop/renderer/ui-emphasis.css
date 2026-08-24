@@ -1,0 +1,43 @@
+.pdf-edessb-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--muted) 24%, var(--line));
+  background: color-mix(in srgb, var(--muted) 5%, var(--surface));
+  color: var(--muted);
+}
+
+.pdf-edessb-link:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  color: var(--accent);
+}
+
+.pdf-edessb-link .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.pdf-edessb-link:disabled,
+.pdf-edessb-link:disabled:hover {
+  border-color: var(--line);
+  background: var(--bubble);
+  color: var(--muted);
+  opacity: .5;
+  cursor: default;
+}
+
+#pdf-search-close {
+  background: #cf3f3f;
+  color: #fff;
+  font-weight: 650;
+}
+
+#pdf-search-close:hover {
+  background: #b93434;
+}
+
+#pdf-search-close:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #cf3f3f 24%, transparent);
+}

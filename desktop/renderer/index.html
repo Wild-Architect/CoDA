@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="scale.css">
   <link rel="stylesheet" href="edessb.css">
+  <link rel="stylesheet" href="ui-emphasis.css">
   <link rel="stylesheet" href="icons.css">
   <link rel="stylesheet" href="pdf-viewer.css">
   <link rel="stylesheet" href="settings.css">
@@ -40,7 +41,7 @@
     </aside>
     <main class="stage"><section class="surface"><div id="page"></div></section></main>
   </div>
-  <dialog id="about"><button class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><h2>Про CoDA</h2><p>Локальний робочий простір для будівельних норм, документів і проєктування.</p><small>Версія <span id="about-version">1.2.1</span> (Alya)</small></dialog>
+  <dialog id="about"><button class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><h2>Про CoDA</h2><p>Локальний робочий простір для будівельних норм, документів і проєктування.</p><small>Версія <span id="about-version">1.2.2</span> (Alya)</small></dialog>
   <dialog id="updates" class="updates-dialog"><button class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><h2>Історія оновлень</h2><div id="updates-content"></div></dialog>
   <dialog id="user-data-dialog" class="admin-dialog user-data-dialog"><button class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><div class="admin-heading"><div class="admin-icon"><svg class="icon"><use href="icons.svg#save"/></svg></div><div><h2>Дані користувача</h2><p>Незалежні резервні копії частин особистого робочого простору CoDA</p></div></div><div class="user-data-grid"><article><div class="user-data-icon"><svg class="icon"><use href="icons.svg#download"/></svg></div><div><h3>Експорт даних</h3><p>Оберіть потрібні категорії та збережіть їх одним файлом .codasaves.</p></div><button id="user-data-export" class="button primary" type="button">Обрати й зберегти</button></article><article><div class="user-data-icon warning"><svg class="icon"><use href="icons.svg#upload"/></svg></div><div><h3>Імпорт даних</h3><p>Оберіть файл і замініть лише потрібні категорії, не зачіпаючи решту даних.</p></div><button id="user-data-import" class="button" type="button">Обрати й імпортувати</button></article></div><p id="user-data-status" class="admin-status"></p></dialog>
   <dialog id="user-data-groups-dialog" class="admin-dialog user-data-groups-dialog"><button class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><div class="admin-heading"><div class="admin-icon"><svg class="icon"><use href="icons.svg#save"/></svg></div><div><h2 id="user-data-groups-title">Оберіть дані</h2><p id="user-data-groups-description"></p></div></div><div id="user-data-groups-list" class="user-data-groups-list"></div><p id="user-data-groups-error" class="form-error" hidden></p><div class="admin-actions"><button id="user-data-groups-cancel" class="button" type="button">Скасувати</button><button id="user-data-groups-accept" class="button primary" type="button">Продовжити</button></div></dialog>
@@ -61,6 +62,7 @@
   </dialog>
   <dialog id="database-update-dialog" class="update-dialog"><button class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><div class="update-dialog-icon"><svg class="icon"><use href="icons.svg#refresh-cw"/></svg></div><h2 id="database-update-title">Оновлення бази</h2><p id="database-update-message"></p><div class="update-dialog-actions"><button id="database-update-cancel" class="button">Закрити</button><button id="database-update-install" class="button primary" hidden>Оновити</button></div></dialog>
   <dialog id="program-update-dialog" class="update-dialog"><button id="program-update-close-x" class="dialog-close" title="Закрити"><svg class="icon"><use href="icons.svg#x"/></svg></button><div class="update-dialog-icon"><svg id="program-update-icon" class="icon"><use href="icons.svg#refresh-cw"/></svg></div><h2 id="program-update-title">Оновлення CoDA</h2><div id="program-update-message" class="update-dialog-message"></div><div id="program-update-progress" class="program-update-progress" hidden><span></span></div><div class="update-dialog-actions"><button id="program-update-cancel" class="button">Пізніше</button><button id="program-update-install" class="button primary" hidden>Оновити</button></div></dialog>
+  <script src="pdf-search.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
