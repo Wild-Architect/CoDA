@@ -14,6 +14,7 @@ data/archicad_projects/
 data/edessb_projects/
 data/edessb_documents/
 data/attachments/
+data/document_library/
 data/public_notes_library/
 data/ui_state.json
 data/user_materials.json

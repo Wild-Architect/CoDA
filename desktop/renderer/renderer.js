@@ -1,9 +1,8 @@
 const $ = selector => document.querySelector(selector);
 const page = $('#page');
-let state, catalog, notes, importedNotes = [], catalogMetadata = {}, selectedNote = null, currentPage = 'dbn';
+let state, catalog, libraryItems = [], libraryConfig = { categories: [] }, catalogMetadata = {}, currentPage = 'dbn';
 let pdfjsLibPromise = null, activePdf = null;
 let viewHistory = [], viewHistoryIndex = -1;
-let attachmentPreviewUrls = [];
 let pendingDatabaseManifest = null;
 let pendingProgramUpdate = null;
 let selectedArchicadProjectId = null;
@@ -12,24 +11,12 @@ let edessbConfig = { portalLinks: [], documentTypes: [] };
 let selectedMaterialCategory = 'all';
 let materialSearch = '';
 const expandedMaterialIds = new Set();
-const allNotes = () => [...notes, ...importedNotes];
+let selectedLibraryCategory = 'dstu';
 const escape = value => String(value || '').replace(/[&<>"]/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[char]));
 const icon = (name, className = '') => `<svg class="icon ${className}" aria-hidden="true"><use href="icons.svg#${name}"></use></svg>`;
 const saveState = async () => window.ekp.saveState(state);
 const recent = async (key, value) => { state[key] = [value, ...(state[key] || []).filter(item => item !== value)].slice(0, 8); await saveState(); renderSidebar(); };
 
-function clearAttachmentPreviews() {
-  attachmentPreviewUrls.forEach(url => URL.revokeObjectURL(url));
-  attachmentPreviewUrls = [];
-}
-function scrollChatToEnd() {
-  requestAnimationFrame(() => {
-    const surface = $('.surface');
-    const thread = $('.chat-thread');
-    if (surface) surface.scrollTop = 0;
-    if (thread) thread.scrollTop = thread.scrollHeight;
-  });
-}
 function attachmentOpenLabel(filename) {
   const extension = String(filename || '').split('.').pop().toLowerCase();
   if (['doc','docx','rtf'].includes(extension)) return 'Відкрити у Word';
@@ -38,41 +25,6 @@ function attachmentOpenLabel(filename) {
   if (['zip','rar','7z'].includes(extension)) return 'Відкрити архів';
   return 'Відкрити файл';
 }
-async function loadAttachmentPreviews(note) {
-  const imageTypes = new Set(['jpg','jpeg','png','gif','webp','bmp','svg']);
-  for (const preview of document.querySelectorAll('[data-preview-file]')) {
-    const index = Number(preview.dataset.previewFile);
-    const file = note.attachments[index];
-    const extension = String(file?.name || '').split('.').pop().toLowerCase();
-    if (file && extension === 'pdf') {
-      preview.classList.add('pdf-launch');
-      preview.innerHTML = `<div class="pdf-launch-icon">${icon('file-text')}</div><div class="attachment-copy"><strong title="${escape(file.name)}">${escape(file.name)}</strong><span>PDF-документ</span></div><button class="button primary">Переглянути PDF</button>`;
-      preview.querySelector('button').onclick = () => openAttachmentPdf(note, file);
-      continue;
-    }
-    if (!file || !imageTypes.has(extension)) {
-      preview.classList.add('generic');
-      preview.innerHTML = `<div class="generic-file-icon">${icon('file-text')}</div><div class="attachment-copy"><strong title="${escape(file?.name)}">${escape(file?.name)}</strong><span>${extension ? extension.toUpperCase() + '-файл' : 'Файл'}</span></div><button class="button">${attachmentOpenLabel(file?.name)}</button>`;
-      preview.querySelector('button').onclick = () => window.ekp.openFile(file.path);
-      continue;
-    }
-    try {
-      const result = await window.ekp.readAttachment(file.path);
-      const url = URL.createObjectURL(new Blob([new Uint8Array(result.data)], { type: result.mime }));
-      if (!document.body.contains(preview) || selectedNote !== note) { URL.revokeObjectURL(url); continue; }
-      attachmentPreviewUrls.push(url);
-      preview.classList.add('image-preview');
-      preview.innerHTML = `<img src="${url}" alt="${escape(file.name)}" title="Відкрити у стандартній програмі">`;
-      preview.querySelector('img').onclick = () => window.ekp.openFile(file.path);
-      preview.querySelector('img').onload = scrollChatToEnd;
-    } catch {
-      preview.classList.add('generic');
-      preview.textContent = 'Не вдалося завантажити попередній перегляд';
-    }
-  }
-  scrollChatToEnd();
-}
-
 function confirmDelete(message, title = 'Підтвердження видалення') {
   return new Promise(resolve => {
     const dialog = $('#delete-confirm');
@@ -108,12 +60,11 @@ function renderSidebar() {
   $('#settings-theme-label').textContent = state.theme === 'dark' ? 'Світла тема' : 'Темна тема';
   $('#settings-theme-icon').setAttribute('href', state.theme === 'dark' ? 'icons.svg#sun' : 'icons.svg#moon');
   document.querySelectorAll('.primary-nav button').forEach(button => button.classList.toggle('active', button.dataset.page === currentPage));
-  const pinnedNotes = notes.filter(note => note.pinned).map(note => ({ label: note.title, kind:'notebook-pen', action: () => openNote(note), unpin: async () => { note.pinned=false; await window.ekp.saveNote(note); notes=await window.ekp.notes(); if(selectedNote?.id===note.id) selectedNote=notes.find(item=>item.id===note.id)||selectedNote; renderSidebar(); } }));
   const pinnedDbn = catalog.filter(item => (state.pinned_dbn || []).includes(item.path)).map(item => ({ label:`${item.number} — ${item.title}`, kind:'book-open', action: () => openDbn(item), unpin: async () => { state.pinned_dbn=(state.pinned_dbn||[]).filter(path=>path!==item.path); await saveState(); renderSidebar(); } }));
-  const noteMap = new Map(notes.map(note => [note.id, note])); const dbnMap = new Map(catalog.map(item => [item.path, item]));
-  const recently = [...(state.recent_notes || []).map(id => noteMap.get(id)).filter(Boolean).map(note => ({label:note.title,kind:'notebook-pen',action:()=>openNote(note)})), ...(state.recent_dbn || []).map(id => dbnMap.get(id)).filter(Boolean).map(item => ({label:item.number,kind:'book-open',action:()=>openDbn(item)}))];
+  const dbnMap = new Map(catalog.map(item => [item.path, item]));
+  const recently = (state.recent_dbn || []).map(id => dbnMap.get(id)).filter(Boolean).map(item => ({label:item.number,kind:'book-open',action:()=>openDbn(item)}));
   const list = (title, items) => !items.length ? '' : `<div class="side-heading">${title}</div><div class="sidebar-list">${items.slice(0,6).map((item,i) => `<div class="sidebar-list-item"><button data-list="${title}" data-index="${i}" title="${escape(item.label)}">${icon(item.kind, 'small')}<span>${escape(item.label)}</span></button>${item.unpin?`<button class="sidebar-unpin" data-unpin="${i}" title="Прибрати із закріплених">${icon('x','small')}</button>`:''}</div>`).join('')}</div>`;
-  const pinned = [...pinnedNotes, ...pinnedDbn]; $('#side-lists').innerHTML = list('Закріплені', pinned) + list('Нещодавні', recently);
+  const pinned = pinnedDbn; $('#side-lists').innerHTML = list('Закріплені', pinned) + list('Нещодавні', recently);
   document.querySelectorAll('[data-list]').forEach(button => button.onclick = () => (button.dataset.list === 'Закріплені' ? pinned : recently)[Number(button.dataset.index)].action());
   document.querySelectorAll('[data-unpin]').forEach(button => button.onclick = event => { event.stopPropagation(); pinned[Number(button.dataset.unpin)]?.unpin?.(); });
 }
@@ -245,11 +196,6 @@ async function installProgramUpdate() {
     install.disabled = false; cancel.disabled = false; close.disabled = false;
   } finally { stopProgress(); }
 }
-function openExportDialog() {
-  $('#export-notes-list').innerHTML=notes.length?notes.map(note=>`<label class="admin-note-option"><input type="checkbox" value="${escape(note.id)}"><span>${escape(note.title)}</span></label>`).join(''):'<p class="updates-empty">Немає власних нотаток для експорту.</p>';
-  $('#export-status').textContent='';
-  $('#export-dialog').showModal();
-}
 function updateHistoryButtons() {
   $('#nav-back').disabled = viewHistoryIndex <= 0;
   $('#nav-forward').disabled = viewHistoryIndex >= viewHistory.length - 1;
@@ -264,19 +210,15 @@ function rememberView(view) {
 }
 async function showHistoryView(view) {
   if (view.type !== 'pdf') disposePdfViewer();
-  if (view.type === 'attachment-pdf') {
-    const note = (view.imported ? importedNotes : notes).find(entry => entry.id === view.noteId);
-    const file = note?.attachments?.find(entry => entry.path === view.id);
-    if (note && file) { selectedNote = note; currentPage = 'notes'; await renderPdfViewer({ number: file.name, path: file.path, attachment: true }); }
+  if (view.type === 'library-pdf') {
+    const item = libraryItems.find(entry => entry.id === view.id);
+    if (item) { currentPage = 'library'; await renderPdfViewer({ number: item.name, id: item.id, attachment: true, library: true }); }
   } else if (view.type === 'pdf') {
     const item = catalog.find(entry => entry.path === view.id);
     if (item) { currentPage = 'dbn'; await renderPdfViewer(item); }
-  } else if (view.type === 'note') {
-    selectedNote = (view.imported ? importedNotes : notes).find(note => note.id === view.id) || selectedNote;
-    currentPage = 'notes'; renderNotes();
   } else {
     currentPage = view.id;
-    const renderer = { dbn: renderDbn, notes: renderNotes, excel: renderExcel, edessb: renderEdessb, materials: renderMaterials }[view.id];
+    const renderer = { dbn: renderDbn, library: renderLibrary, excel: renderExcel, edessb: renderEdessb, materials: renderMaterials }[view.id];
     if (renderer) await renderer();
   }
   renderSidebar(); updateHistoryButtons();
@@ -300,7 +242,6 @@ function disposePdfViewer() {
 
 function head(title) { return `<div class="page-head"><span class="folder">${icon('folder')}</span><span class="page-title">${title}</span></div>`; }
 function renderDbn() {
-  $('.surface').classList.remove('notes-mode');
   const categoryOf = item => String(item.category || '').trim() || 'Без категорії';
   const categoryCounts = new Map();
   catalog.forEach(item => categoryCounts.set(categoryOf(item), (categoryCounts.get(categoryOf(item)) || 0) + 1));
@@ -564,15 +505,14 @@ function setPdfScale(scale) {
 }
 
 async function renderPdfViewer(item) {
-  $('.surface').classList.remove('notes-mode');
   disposePdfViewer();
-  const documentId = `${item.attachment ? 'attachment' : 'dbn'}:${item.path}`;
+  const documentId = item.library ? `library:${item.id}` : `dbn:${item.path}`;
   activePdf = { item, documentId, document: null, defaultPageSize: null, pdfjs: null, pageNumber: 1, scale: 1.25, singleScale: 1.25, layout: 'single', rendered: new Set(), renderTasks: new Map(), textLayers: new Map(), pageTexts: new Map(), pageTextMaps: new Map(), pageSearchIndexes: new Map(), bookmarks: [], selection: null, nativeSelection: [], selectionFrame: 0, activeBookmarkId: '', searchMatches: [], searchIndex: -1, searchQuery: '', searchToken: 0, observer: null, rightAlt: false, zoomWheelLocked: false };
-  const backLabel = item.attachment ? 'До нотатки' : 'До каталогу';
+  const backLabel = item.library ? 'До бібліотеки' : 'До каталогу';
   page.innerHTML = head(item.number) + `<div class="pdf-viewer"><div class="pdf-toolbar"><button id="pdf-back" class="button">${icon('chevron-left')}<span>${backLabel}</span></button><div class="pdf-search"><div class="pdf-search-box">${icon('search')}<input id="pdf-search-input" class="pdf-search-input" placeholder="Пошук у документі"></div><button id="pdf-search-submit" class="button primary">Пошук</button><span id="pdf-search-count" class="pdf-search-count"></span></div><div class="pdf-toolbar-group"><button id="pdf-prev" class="pdf-icon-button" title="Попередня сторінка">${icon('chevron-left')}</button><input id="pdf-page-number" class="pdf-page-input" type="number" min="1" value="1"><span id="pdf-page-count">/ —</span><button id="pdf-next" class="pdf-icon-button" title="Наступна сторінка">${icon('chevron-right')}</button></div><div class="pdf-layout-switch" aria-label="Режим відображення сторінок"><button id="pdf-layout-single" class="pdf-icon-button active" title="Одна сторінка" aria-pressed="true">${icon('page-single')}</button><button id="pdf-layout-spread" class="pdf-icon-button" title="Дві сторінки поруч" aria-pressed="false">${icon('pages-two')}</button></div><div class="pdf-toolbar-group"><button id="pdf-zoom-out" class="pdf-icon-button" title="Зменшити">${icon('minus')}</button><span id="pdf-zoom-value">125%</span><button id="pdf-zoom-in" class="pdf-icon-button" title="Збільшити">${icon('plus')}</button></div><button id="pdf-open-system" class="button">${icon('external-link')}<span>Відкрити окремо</span></button></div><div class="pdf-workspace"><div id="pdf-stage" class="pdf-stage"><div id="pdf-status" class="pdf-status">Завантаження документа…</div></div><aside class="pdf-bookmarks-panel"><div id="pdf-bookmarks-view" class="pdf-side-view"><div class="pdf-bookmarks-head">${icon('bookmark')}<span>Текстові закладки</span></div><div id="pdf-selection-editor" class="pdf-selection-editor" hidden><div id="pdf-selection-caption" class="pdf-selection-caption">Виділений текст</div><div id="pdf-selection-preview" class="pdf-selection-preview"></div><input id="pdf-bookmark-label" class="pdf-bookmark-label" maxlength="120" placeholder="Ключове слово"><div class="pdf-color-row"><button class="pdf-color active" data-color="yellow" title="Жовтий"></button><button class="pdf-color" data-color="green" title="Зелений"></button><button class="pdf-color" data-color="blue" title="Блакитний"></button><button class="pdf-color" data-color="pink" title="Рожевий"></button><button class="pdf-color" data-color="orange" title="Помаранчевий"></button></div><div class="pdf-selection-actions"><button id="pdf-bookmark-cancel" class="button">Скасувати</button><button id="pdf-bookmark-save" class="button primary">Зберегти</button></div></div><div id="pdf-bookmarks-list" class="pdf-bookmarks-list"></div></div><div id="pdf-search-view" class="pdf-side-view" hidden><div class="pdf-bookmarks-head">${icon('search')}<span>Результати пошуку</span></div><div id="pdf-search-summary" class="pdf-search-summary"></div><div id="pdf-search-results" class="pdf-search-results"></div><div class="pdf-search-footer"><button id="pdf-search-close" class="button">Закрити пошук</button></div></div></aside></div></div>`;
-  $('#pdf-back').onclick = () => item.attachment ? moveHistory(-1) : navigate('dbn');
-  $('#pdf-open-system').onclick = () => item.attachment ? window.ekp.openFile(item.path) : window.ekp.openDbn(item.path);
-  if(!item.attachment){const button=document.createElement('button');button.id='pdf-edessb';button.className='button pdf-edessb-link';button.disabled=!item.edessb_url;button.title=item.edessb_url?'Відкрити сторінку цього ДБН у ЄДЕССБ':'Для цього документа посилання ЄДЕССБ відсутнє';button.innerHTML=`${icon('external-link')}<span>ЄДЕССБ</span>`;$('#pdf-open-system').insertAdjacentElement('afterend',button);button.onclick=()=>{if(item.edessb_url)window.ekp.openExternal(item.edessb_url);};}
+  $('#pdf-back').onclick = () => item.library ? moveHistory(-1) : navigate('dbn');
+  $('#pdf-open-system').onclick = () => item.library ? window.ekp.openLibraryItem(item.id) : window.ekp.openDbn(item.path);
+  if(!item.library){const button=document.createElement('button');button.id='pdf-edessb';button.className='button pdf-edessb-link';button.disabled=!item.edessb_url;button.title=item.edessb_url?'Відкрити сторінку цього ДБН у ЄДЕССБ':'Для цього документа посилання ЄДЕССБ відсутнє';button.innerHTML=`${icon('external-link')}<span>ЄДЕССБ</span>`;$('#pdf-open-system').insertAdjacentElement('afterend',button);button.onclick=()=>{if(item.edessb_url)window.ekp.openExternal(item.edessb_url);};}
   $('#pdf-prev').onclick = () => scrollToPdfPage(activePdf.pageNumber - 1);
   $('#pdf-next').onclick = () => scrollToPdfPage(activePdf.pageNumber + 1);
   $('#pdf-layout-single').onclick = () => setPdfLayout('single');
@@ -600,8 +540,7 @@ async function renderPdfViewer(item) {
     setTimeout(() => { if (activePdf) activePdf.zoomWheelLocked = false; }, 90);
   };
   try {
-    const [pdfjs, source] = await Promise.all([loadPdfJs(), item.attachment ? window.ekp.readAttachment(item.path) : window.ekp.readPdf(item.path)]);
-    const data = item.attachment ? source.data : source;
+    const [pdfjs, data] = await Promise.all([loadPdfJs(), item.library ? window.ekp.readLibraryPdf(item.id) : window.ekp.readPdf(item.path)]);
     activePdf.pdfjs = pdfjs;
     activePdf.document = await pdfjs.getDocument({ data: new Uint8Array(data) }).promise;
     const defaultPage=await activePdf.document.getPage(1),defaultViewport=defaultPage.getViewport({scale:1});activePdf.defaultPageSize={width:defaultViewport.width,height:defaultViewport.height};
@@ -618,50 +557,61 @@ async function renderPdfViewer(item) {
 }
 
 async function openDbn(item) { await recent('recent_dbn', item.path); currentPage = 'dbn'; rememberView({ type: 'pdf', id: item.path }); await renderPdfViewer(item); renderSidebar(); }
-async function openAttachmentPdf(note, file) { selectedNote = note; currentPage = 'notes'; rememberView({ type: 'attachment-pdf', id: file.path, noteId: note.id, imported:Boolean(note.imported) }); await renderPdfViewer({ number: file.name, path: file.path, attachment: true }); renderSidebar(); }
-function renderNotes() {
-  $('.surface').classList.add('notes-mode');
-  clearAttachmentPreviews();
-  if (selectedNote && !allNotes().includes(selectedNote) && selectedNote.id) selectedNote = (selectedNote.imported ? importedNotes : notes).find(note=>note.id===selectedNote.id) || null;
-  selectedNote ||= notes[0] || importedNotes[0] || { title:'', body:'', messages:[], attachments:[], pinned:false };
-  const imported = Boolean(selectedNote.imported);
-  selectedNote.attachments ||= [];
-  if (!Array.isArray(selectedNote.messages) || (!selectedNote.messages.length && selectedNote.body?.trim())) selectedNote.messages = selectedNote.body?.trim() ? [{ id:`legacy-${selectedNote.id||'new'}`, text:selectedNote.body, created_at:selectedNote.created_at||'' }] : [];
-  const privateButtons=notes.map(note=>`<button data-note="${note.id}" data-imported="false" class="${note===selectedNote?'active':''}">${note.pinned?icon('star','small star'):icon('file-text','small')}${escape(note.title)}</button>`).join('');
-  const importedButtons=importedNotes.map(note=>`<button data-note="${note.id}" data-imported="true" class="${note===selectedNote?'active':''}">${icon('library','small')}${escape(note.title)}</button>`).join('');
-  const attachmentCard=(file,index)=>`<article class="chat-attachment"><div class="attachment-preview" data-preview-file="${index}"><span>Завантаження перегляду…</span></div>${imported?'':`<button class="attachment-delete attachment-card-delete" data-delete-file="${index}" title="Видалити вкладення">${icon('trash','small')}</button>`}</article>`;
-  const latestMessageTime=Math.max(Date.parse(selectedNote.created_at||'')||0,...selectedNote.messages.map(message=>Date.parse(message.created_at||'')||0));
-  selectedNote.attachments.forEach((file,index)=>{if(!file.created_at)file.created_at=new Date(latestMessageTime+index+1).toISOString();});
-  const timeline=[...selectedNote.messages.map((message,index)=>({kind:'message',index,time:Date.parse(message.created_at||'')||index})),...selectedNote.attachments.map((file,index)=>({kind:'attachment',index,time:Date.parse(file.created_at||'')||latestMessageTime+index+1}))].sort((a,b)=>a.time-b.time||a.index-b.index);
-  const timelineHtml=timeline.map(item=>item.kind==='message'
-    ? `<div class="chat-message"><article class="chat-bubble">${imported?'':`<button class="message-delete" data-delete-message="${item.index}" title="Видалити повідомлення">${icon('trash','small')}</button>`}<p class="chat-bubble-text">${escape(selectedNote.messages[item.index].text)}</p></article></div>`
-    : `<div class="chat-message"><article class="chat-bubble attachment-bubble"><div class="chat-attachments">${attachmentCard(selectedNote.attachments[item.index],item.index)}</div></article></div>`).join('');
-  const header=imported
-    ? `<header class="chat-header"><div class="chat-title">${escape(selectedNote.title)}</div><button id="delete-imported-note" class="button imported-note-delete" title="Видалити імпортовану нотатку">${icon('trash')}<span>Видалити</span></button><span class="readonly-badge">${icon('library','small')}Імпортована</span></header><div class="public-note-meta">Добірка: ${escape(selectedNote.source_library||'не вказана')} · Автор: ${escape(selectedNote.source_author||selectedNote.author||'не вказаний')}</div>`
-    : `<header class="chat-header"><input id="note-title" class="chat-title" placeholder="Назва нотатки" value="${escape(selectedNote.title)}"><button id="save-note-title" class="button title-save" title="Зберегти назву">${icon('save')}<span>Зберегти назву</span></button><button id="pin-note" class="button" title="${selectedNote.pinned?'Відкріпити':'Закріпити'}">${icon(selectedNote.pinned?'star':'pin',selectedNote.pinned?'small star':'')}</button><button id="delete-note" class="button" title="Видалити нотатку">${icon('trash')}</button></header>`;
-  const composer=`<div class="chat-composer${imported?' imported-composer':''}">${imported?'':`<button id="attach" class="composer-attach" title="Прикріпити файл">${icon('plus')}</button>`}<textarea id="note-body" placeholder="${imported?'Додайте повідомлення — нотатка стане вашою…':'Напишіть повідомлення…'}"></textarea><button id="save-note" class="composer-send"><span>Відправити</span>${icon('arrow-up')}</button></div>`;
-  page.innerHTML=head('Нотатки')+`<div class="notes-page"><div class="notes-layout"><aside class="notes-list"><div class="notes-transfer-actions"><button id="new-note" class="notes-menu-action">${icon('plus')}<span>Нова нотатка</span></button><button id="import-notes" class="notes-menu-action">${icon('download')}<span>Імпорт нотаток</span></button><button id="export-notes" class="notes-menu-action">${icon('upload')}<span>Експорт нотаток</span></button></div><div class="notes-list-heading">Мої нотатки</div>${privateButtons||'<div class="notes-empty-small">Поки немає нотаток</div>'}<div class="notes-list-heading">Імпортовані нотатки</div>${importedButtons||'<div class="notes-empty-small">Поки немає імпортованих нотаток</div>'}</aside><section class="chat-note">${header}<div class="chat-thread">${timelineHtml||`<div class="chat-empty"><span>${imported?'Додайте повідомлення, щоб перенести нотатку до «Моїх нотаток»':'Напишіть текст або прикріпіть фото чи PDF'}</span></div>`}</div>${composer}</section></div></div>`;
-  document.querySelectorAll('[data-note]').forEach(button=>button.onclick=()=>openNote((button.dataset.imported==='true'?importedNotes:notes).find(note=>note.id===button.dataset.note)));
-  $('#export-notes').onclick=openExportDialog;
-  $('#import-notes').onclick=async()=>{try{const result=await window.ekp.importNotes();if(result.canceled)return;importedNotes=await window.ekp.importedNotes();selectedNote=importedNotes[0]||notes[0]||null;renderNotes();renderSidebar();}catch(error){window.alert(`Не вдалося імпортувати нотатки: ${error?.message||error}`);}};
-  $('#new-note').onclick=()=>{selectedNote={id:null,title:'',body:'',messages:[],attachments:[],pinned:false};renderNotes();};
-  if (!imported) {
-    document.querySelectorAll('[data-delete-file]').forEach(button=>button.onclick=async()=>{const index=Number(button.dataset.deleteFile);const file=selectedNote.attachments[index];if(!file||!await confirmDelete(`Вкладення «${file.name}» буде видалено зі сховища CoDA. Оригінальний файл залишиться без змін.`, 'Видалити вкладення?'))return;await window.ekp.deleteAttachment(file.path);selectedNote.attachments.splice(index,1);selectedNote=await window.ekp.saveNote(selectedNote);notes=await window.ekp.notes();renderNotes();renderSidebar();});
-    document.querySelectorAll('[data-delete-message]').forEach(button=>button.onclick=async()=>{const index=Number(button.dataset.deleteMessage);if(!selectedNote.messages[index]||!await confirmDelete('Це повідомлення буде видалено без можливості відновлення.','Видалити повідомлення?'))return;selectedNote.messages.splice(index,1);selectedNote.body=selectedNote.messages.map(message=>message.text).join('\n\n');selectedNote=await window.ekp.saveNote(selectedNote);notes=await window.ekp.notes();renderNotes();renderSidebar();});
-    $('#attach').onclick=async()=>{const id=selectedNote.id||crypto.randomUUID().replaceAll('-','');selectedNote.id=id;selectedNote.title=$('#note-title').value;const added=await window.ekp.addAttachments(id);if(!added.length)return;const text=$('#note-body').value.trim();let sequence=Date.now();if(text)selectedNote.messages.push({id:crypto.randomUUID(),text,created_at:new Date(sequence++).toISOString()});added.forEach(file=>file.created_at=new Date(sequence++).toISOString());selectedNote.body=selectedNote.messages.map(message=>message.text).join('\n\n');selectedNote.attachments.push(...added);selectedNote=await window.ekp.saveNote(selectedNote);notes=await window.ekp.notes();renderNotes();renderSidebar();};
-    $('#save-note-title').onclick=async()=>{selectedNote.title=$('#note-title').value;selectedNote=await window.ekp.saveNote(selectedNote);notes=await window.ekp.notes();renderNotes();renderSidebar();};
-    $('#pin-note').onclick=async()=>{selectedNote.pinned=!selectedNote.pinned;selectedNote.title=$('#note-title').value;selectedNote=await window.ekp.saveNote(selectedNote);notes=await window.ekp.notes();renderNotes();renderSidebar();};
-    $('#save-note').onclick=async()=>{const text=$('#note-body').value.trim();selectedNote.title=$('#note-title').value;if(!text&&!selectedNote.id)return;if(text)selectedNote.messages.push({id:crypto.randomUUID(),text,created_at:new Date().toISOString()});selectedNote.body=selectedNote.messages.map(message=>message.text).join('\n\n');selectedNote=await window.ekp.saveNote(selectedNote);notes=await window.ekp.notes();await recent('recent_notes',selectedNote.id);renderNotes();};
-    $('#note-body').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$('#save-note').click();}};
-    $('#delete-note').onclick=async()=>{if(selectedNote.id&&await confirmDelete('Нотатку та всі її вкладення буде видалено без можливості відновлення.','Видалити нотатку?')){await window.ekp.deleteNote(selectedNote.id);notes=await window.ekp.notes();selectedNote=notes[0]||importedNotes[0]||null;renderNotes();renderSidebar();}};
-  } else {
-    $('#delete-imported-note').onclick=async()=>{if(!await confirmDelete(`Імпортовану нотатку «${selectedNote.title}» та її локальні вкладення буде видалено з CoDA. Початковий файл .codanotes залишиться без змін.`,'Видалити імпортовану нотатку?'))return;try{await window.ekp.deleteImportedNote(selectedNote.id);importedNotes=await window.ekp.importedNotes();selectedNote=importedNotes[0]||notes[0]||null;renderNotes();renderSidebar();}catch(error){showArchicadMessage('Не вдалося видалити нотатку',error?.message||String(error));}};
-    $('#save-note').onclick=async()=>{const text=$('#note-body').value.trim();if(!text)return;selectedNote.messages.push({id:crypto.randomUUID(),text,created_at:new Date().toISOString()});selectedNote.body=selectedNote.messages.map(message=>message.text).join('\n\n');selectedNote=await window.ekp.promoteImportedNote(selectedNote);[notes,importedNotes]=await Promise.all([window.ekp.notes(),window.ekp.importedNotes()]);await recent('recent_notes',selectedNote.id);renderNotes();renderSidebar();};
-  }
-  $('#note-body').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$('#save-note').click();}};
-  loadAttachmentPreviews(selectedNote); scrollChatToEnd();
+function libraryFileSize(value) {
+  const bytes=Number(value)||0;
+  if(bytes<1024)return `${bytes} Б`;
+  if(bytes<1024*1024)return `${(bytes/1024).toFixed(bytes<10240?1:0)} КБ`;
+  return `${(bytes/1024/1024).toFixed(bytes<10*1024*1024?1:0)} МБ`;
 }
-async function openNote(note) { if(!note)return; selectedNote=note; if(!note.imported)await recent('recent_notes',note.id);currentPage='notes';rememberView({type:'note',id:note.id,imported:Boolean(note.imported)});renderNotes();renderSidebar(); }
+function requestLibraryItem() {
+  return new Promise(resolve=>{
+    const dialog=$('#library-add-dialog'),category=$('#library-item-category'),name=$('#library-item-name'),fileName=$('#library-item-file-name'),error=$('#library-item-error');
+    let done=false,sourcePath='';
+    const finish=value=>{if(done)return;done=true;if(dialog.open)dialog.close();resolve(value);};
+    category.innerHTML=libraryConfig.categories.map(item=>`<option value="${escape(item.id)}">${escape(item.label)}</option>`).join('');
+    category.value=selectedLibraryCategory||libraryConfig.categories[0]?.id||'dstu';name.value='';fileName.textContent='Файл не обрано';error.hidden=true;
+    $('#library-item-select-file').onclick=async()=>{try{const selected=await window.ekp.selectLibraryFile();if(selected.canceled)return;sourcePath=selected.sourcePath;fileName.textContent=selected.name;if(!name.value.trim())name.value=selected.name.replace(/\.[^.]+$/,'');error.hidden=true;}catch(fileError){error.textContent=readableError(fileError);error.hidden=false;}};
+    $('#library-item-cancel').onclick=()=>finish(null);
+    $('#library-item-accept').onclick=()=>{const payload={category:category.value,name:name.value.trim(),sourcePath};if(!payload.name){error.textContent='Вкажіть найменування документа.';error.hidden=false;name.focus();return;}if(!payload.sourcePath){error.textContent='Оберіть файл документа.';error.hidden=false;return;}finish(payload);};
+    dialog.oncancel=event=>{event.preventDefault();finish(null);};dialog.onclose=()=>finish(null);dialog.showModal();requestAnimationFrame(()=>name.focus());
+  });
+}
+function requestLibraryCategory() {
+  return new Promise(resolve=>{
+    const dialog=$('#library-category-dialog'),name=$('#library-category-name'),error=$('#library-category-error');
+    let done=false;
+    const finish=value=>{if(done)return;done=true;if(dialog.open)dialog.close();resolve(value);};
+    name.value='';error.hidden=true;
+    $('#library-category-cancel').onclick=()=>finish(null);
+    $('#library-category-accept').onclick=()=>{const value=name.value.trim();if(!value){error.textContent='Вкажіть назву категорії.';error.hidden=false;name.focus();return;}finish(value);};
+    name.oninput=()=>{error.hidden=true;};
+    name.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();$('#library-category-accept').click();}};
+    dialog.oncancel=event=>{event.preventDefault();finish(null);};dialog.onclose=()=>finish(null);dialog.showModal();requestAnimationFrame(()=>name.focus());
+  });
+}
+async function openLibraryItem(item) {
+  if(!item?.exists){showArchicadMessage('Файл не знайдено','Файл документа відсутній у локальному сховищі Бібліотеки.');return;}
+  if(item.isPdf){currentPage='library';rememberView({type:'library-pdf',id:item.id});await renderPdfViewer({number:item.name,id:item.id,library:true});renderSidebar();return;}
+  try{await window.ekp.openLibraryItem(item.id);}catch(error){showArchicadMessage('Не вдалося відкрити файл',readableError(error));}
+}
+async function renderLibrary() {
+  [libraryItems,libraryConfig]=await Promise.all([window.ekp.libraryItems(),window.ekp.libraryConfig()]);
+  const categories=libraryConfig.categories;
+  if(!categories.some(item=>item.id===selectedLibraryCategory))selectedLibraryCategory=categories[0]?.id||'dstu';
+  const counts=new Map(categories.map(category=>[category.id,libraryItems.filter(item=>item.category===category.id).length]));
+  const categoryButtons=categories.map(category=>`<button class="${category.id===selectedLibraryCategory?'active':''}" data-library-category="${escape(category.id)}"><span>${escape(category.label)}</span><strong>${counts.get(category.id)||0}</strong></button>`).join('');
+  const visible=libraryItems.filter(item=>item.category===selectedLibraryCategory);
+  const cards=visible.map(item=>`<article class="library-document${item.exists?'':' missing'}"><div class="library-document-icon">${icon('file-text')}</div><button class="library-document-copy" data-library-open="${escape(item.id)}" ${item.exists?'':'disabled'}><strong>${escape(item.name)}</strong><span>${escape(item.originalName)} · ${item.extension?escape(item.extension.toUpperCase()):'Файл'} · ${libraryFileSize(item.size)}</span></button><div class="library-document-actions"><button class="button library-open" data-library-open="${escape(item.id)}" ${item.exists?'':'disabled'}>${icon(item.isPdf?'book-open':'external-link')}<span>${item.isPdf?'Переглянути PDF':attachmentOpenLabel(item.originalName)}</span></button><button class="button library-delete" data-library-delete="${escape(item.id)}" title="Видалити документ" aria-label="Видалити документ">${icon('trash')}</button></div></article>`).join('');
+  const activeCategory=categories.find(item=>item.id===selectedLibraryCategory);
+  page.innerHTML=head('Бібліотека')+`<div class="page-content library-page"><div class="library-hero"><div><h1 class="hero">Бібліотека</h1><p class="subtitle">Власне локальне сховище стандартів і нормативних документів</p></div><div class="library-toolbar"><button id="open-library-folder" class="button">${icon('folder')}<span>Відкрити папку</span></button><button id="add-library-item" class="button primary">${icon('plus')}<span>Додати документ</span></button></div></div><div class="library-layout"><aside class="library-categories"><div class="library-categories-title"><span>Категорії</span><button id="add-library-category" title="Створити категорію" aria-label="Створити категорію">${icon('plus')}</button></div>${categoryButtons}</aside><section class="library-documents"><div class="library-section-head"><div><h2>${escape(activeCategory?.label||'Документи')}</h2><p>${visible.length} ${visible.length===1?'документ':'документів'}</p></div></div><div class="library-document-list">${cards||`<div class="library-empty">${icon('library')}<h3>У цій категорії ще немає документів</h3><p>Додайте PDF для перегляду всередині CoDA або файл іншого формату для відкриття у системній програмі.</p><button id="add-library-item-empty" class="button primary">${icon('plus')}<span>Додати документ</span></button></div>`}</div></section></div></div>`;
+  document.querySelectorAll('[data-library-category]').forEach(button=>button.onclick=()=>{selectedLibraryCategory=button.dataset.libraryCategory;renderLibrary();});
+  const add=async()=>{const payload=await requestLibraryItem();if(!payload)return;try{const saved=await window.ekp.addLibraryItem(payload);selectedLibraryCategory=saved.category;await renderLibrary();}catch(error){showArchicadMessage('Не вдалося додати документ',readableError(error));}};
+  $('#add-library-item').onclick=add;if($('#add-library-item-empty'))$('#add-library-item-empty').onclick=add;
+  $('#add-library-category').onclick=async()=>{const label=await requestLibraryCategory();if(!label)return;try{const category=await window.ekp.addLibraryCategory(label);selectedLibraryCategory=category.id;await renderLibrary();}catch(error){showArchicadMessage('Не вдалося створити категорію',readableError(error));}};
+  $('#open-library-folder').onclick=async()=>{try{await window.ekp.openLibraryFolder();}catch(error){showArchicadMessage('Не вдалося відкрити папку',readableError(error));}};
+  document.querySelectorAll('[data-library-open]').forEach(button=>button.onclick=()=>openLibraryItem(libraryItems.find(item=>item.id===button.dataset.libraryOpen)));
+  document.querySelectorAll('[data-library-delete]').forEach(button=>button.onclick=async()=>{const item=libraryItems.find(entry=>entry.id===button.dataset.libraryDelete);if(!item||!await confirmDelete(`Документ «${item.name}» і його локальна копія будуть видалені з Бібліотеки. Початковий файл залишиться без змін.`,'Видалити документ?'))return;try{await window.ekp.deleteLibraryItem(item.id);await renderLibrary();}catch(error){showArchicadMessage('Не вдалося видалити документ',readableError(error));}});
+}
 function showArchicadMessage(title, message) {
   const dialog=$('#archicad-message-dialog');
   $('#archicad-message-title').textContent=title;
@@ -722,7 +672,6 @@ function archicadConnectionsHtml(connections) {
 }
 function archicadDevelopmentNotice(){return `<div class="archicad-development-notice">${icon('info')}<div><strong>Функціонал перебуває в розробці</strong><span>Розділ Archicad / Excel ще не доопрацьований. Перед імпортом змін рекомендуємо зберігати резервну копію проєкту Archicad.</span></div></div>`;}
 async function renderExcel(){
-  $('.surface').classList.remove('notes-mode');
   page.innerHTML=head('Archicad / Excel')+`<div class="page-content archicad-page"><div class="archicad-empty">Завантаження проєктів…</div></div>`;
   const [connections,projects]=await Promise.all([window.ekp.archicadConnections(),window.ekp.archicadProjects()]);
   if(currentPage!=='excel')return;
@@ -799,7 +748,6 @@ function bindEdessbPortalLinks() {
   document.querySelectorAll('[data-edessb-portal]').forEach(button=>button.onclick=()=>window.ekp.openExternal(button.dataset.edessbPortal));
 }
 async function renderEdessb() {
-  $('.surface').classList.remove('notes-mode');
   page.innerHTML=head('ЄДЕССБ')+`<div class="page-content edessb-page"><div class="edessb-loading">Завантаження проєктів…</div></div>`;
   const [config,projects]=await Promise.all([window.ekp.edessbConfig(),window.ekp.edessbProjects()]);
   if(currentPage!=='edessb')return;
@@ -863,7 +811,6 @@ function bindMaterialResultActions(library, refreshResults) {
   document.querySelectorAll('[data-material-open-file]').forEach(button=>button.onclick=async()=>{const material=library.materials.find(item=>item.id===button.dataset.materialOpenFile),attachment=material?.attachments?.find(item=>item.id===button.dataset.materialAttachment);if(!attachment)return;try{await window.ekp.openMaterialAttachment(attachment.storedName);}catch(error){showArchicadMessage('Не вдалося відкрити файл',readableError(error));}});
 }
 async function renderMaterials() {
-  $('.surface').classList.remove('notes-mode');
   page.innerHTML=head('Будівельні матеріали')+`<div class="page-content materials-page"><div class="materials-placeholder">Завантаження бази матеріалів…</div></div>`;
   let library;try{library=await window.ekp.materialsLibrary();}catch(error){page.innerHTML=head('Будівельні матеріали')+`<div class="page-content materials-page"><div class="material-empty">${icon('info')}<h3>Не вдалося прочитати базу</h3><p>${escape(readableError(error))}</p></div></div>`;return;}
   if(currentPage!=='materials')return;
@@ -898,12 +845,8 @@ $('#database-update-install').onclick=installDatabaseUpdate;
 $('#program-update-cancel').onclick=()=>$('#program-update-dialog').close();
 $('#program-update-close-x').onclick=()=>$('#program-update-dialog').close();
 $('#program-update-install').onclick=installProgramUpdate;
-$('#export-close').onclick=()=>$('#export-dialog').close();
-$('#export-success-ok').onclick=()=>$('#export-success-dialog').close();
 $('#archicad-message-ok').onclick=()=>$('#archicad-message-dialog').close();
 $('#user-data-export').onclick=async()=>{const button=$('#user-data-export'),status=$('#user-data-status');button.disabled=true;try{const groups=await window.ekp.userDataGroups(),ids=await requestUserDataGroups(groups,'export');if(!ids)return;status.textContent='Створення резервної копії…';const result=await window.ekp.exportUserData(ids);if(result.canceled){status.textContent='Експорт скасовано.';return;}$('#user-data-dialog').close();showArchicadMessage('Резервну копію створено',`Вибрані дані збережено у файл:\n${result.packagePath}`);}catch(error){status.textContent=`Не вдалося створити копію: ${readableError(error)}`;}finally{button.disabled=false;}};
-$('#user-data-import').onclick=async()=>{const button=$('#user-data-import'),status=$('#user-data-status');button.disabled=true;try{status.textContent='Перевірка резервної копії…';const prepared=await window.ekp.prepareUserDataImport();if(prepared.canceled){status.textContent='Імпорт скасовано.';return;}const ids=await requestUserDataGroups(prepared.groups,'import');if(!ids){status.textContent='Імпорт скасовано.';return;}const selectedGroups=prepared.groups.filter(group=>ids.includes(group.id));if(!await confirmUserDataImport(selectedGroups.map(group=>group.label))){status.textContent='Імпорт скасовано.';return;}status.textContent='Відновлення вибраних даних…';const result=await window.ekp.importUserData(ids);[state,notes,importedNotes]=await Promise.all([window.ekp.state(),window.ekp.notes(),window.ekp.importedNotes()]);selectedNote=null;selectedArchicadProjectId=null;selectedEdessbProjectId=null;viewHistory=[];viewHistoryIndex=-1;$('#user-data-dialog').close();renderSidebar();renderDatabaseUpdate();navigate('dbn');showArchicadMessage('Вибрані дані відновлено',`Замінено: ${selectedGroups.map(group=>group.label).join(', ')}. Інші категорії не змінено. Імпортовано файлів: ${result.fileCount}.`);}catch(error){status.textContent=`Не вдалося імпортувати дані: ${readableError(error)}`;}finally{button.disabled=false;}};
-$('#export-select-all').onclick=()=>{const boxes=[...document.querySelectorAll('#export-notes-list input[type="checkbox"]')];const select=boxes.some(box=>!box.checked);boxes.forEach(box=>box.checked=select);$('#export-select-all').textContent=select?'Зняти вибір':'Вибрати всі';};
-$('#export-create').onclick=async()=>{const button=$('#export-create');const status=$('#export-status');const noteIds=[...document.querySelectorAll('#export-notes-list input:checked')].map(input=>input.value);if(!noteIds.length){status.textContent='Оберіть хоча б одну нотатку.';return;}button.disabled=true;status.textContent='Підготовка файла…';try{const result=await window.ekp.exportNotes({noteIds,libraryName:$('#library-name').value,author:$('#library-author').value});if(result.canceled){status.textContent='Створення файла скасовано.';return;}$('#export-dialog').close();$('#export-success-message').textContent=`Експортовано ${result.count} нотаток у файл ${result.packagePath}`;$('#export-success-dialog').showModal();}catch(error){status.textContent=`Помилка: ${error?.message||error}`;}finally{button.disabled=false;}};
+$('#user-data-import').onclick=async()=>{const button=$('#user-data-import'),status=$('#user-data-status');button.disabled=true;try{status.textContent='Перевірка резервної копії…';const prepared=await window.ekp.prepareUserDataImport();if(prepared.canceled){status.textContent='Імпорт скасовано.';return;}const ids=await requestUserDataGroups(prepared.groups,'import');if(!ids){status.textContent='Імпорт скасовано.';return;}const selectedGroups=prepared.groups.filter(group=>ids.includes(group.id));if(!await confirmUserDataImport(selectedGroups.map(group=>group.label))){status.textContent='Імпорт скасовано.';return;}status.textContent='Відновлення вибраних даних…';const result=await window.ekp.importUserData(ids);[state,libraryItems]=await Promise.all([window.ekp.state(),window.ekp.libraryItems()]);selectedLibraryCategory='dstu';selectedArchicadProjectId=null;selectedEdessbProjectId=null;viewHistory=[];viewHistoryIndex=-1;$('#user-data-dialog').close();renderSidebar();renderDatabaseUpdate();navigate('dbn');showArchicadMessage('Вибрані дані відновлено',`Замінено: ${selectedGroups.map(group=>group.label).join(', ')}. Інші категорії не змінено. Імпортовано файлів: ${result.fileCount}.`);}catch(error){status.textContent=`Не вдалося імпортувати дані: ${readableError(error)}`;}finally{button.disabled=false;}};
 $('#minimize').onclick=()=>window.ekp.window.minimize();$('#maximize').onclick=()=>window.ekp.window.maximize();$('#close').onclick=()=>window.ekp.window.close();
-(async()=>{let appVersion;[state,catalog,notes,importedNotes,catalogMetadata,appVersion]=await Promise.all([window.ekp.state(),window.ekp.catalog(),window.ekp.notes(),window.ekp.importedNotes(),window.ekp.catalogMetadata(),window.ekp.appVersion()]);$('#about-version').textContent=appVersion;renderSidebar();renderDatabaseUpdate();navigate('dbn');setTimeout(()=>checkProgramUpdate(false),1200);})();
+(async()=>{let appVersion;[state,catalog,libraryItems,libraryConfig,catalogMetadata,appVersion]=await Promise.all([window.ekp.state(),window.ekp.catalog(),window.ekp.libraryItems(),window.ekp.libraryConfig(),window.ekp.catalogMetadata(),window.ekp.appVersion()]);$('#about-version').textContent=appVersion;renderSidebar();renderDatabaseUpdate();navigate('dbn');setTimeout(()=>checkProgramUpdate(false),1200);})();

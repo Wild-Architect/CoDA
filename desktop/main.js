@@ -11,6 +11,7 @@ const archicad = require('./archicad-service');
 const archicadProjects = require('./archicad-projects');
 const edessbProjects = require('./edessb-projects');
 const materialsLibrary = require('./materials-library');
+const documentLibrary = require('./document-library');
 
 const execFileAsync = promisify(execFile);
 const MANIFEST_URL = 'https://raw.githubusercontent.com/Wild-Architect/CoDA-Database/main/manifest.json';
@@ -25,11 +26,8 @@ const resourcesRoot = app.isPackaged ? process.resourcesPath : root;
 let databaseRoot = resourcesRoot;
 let catalogDataDir = path.join(databaseRoot, 'data');
 let writableDataDir = path.join(root, 'data');
-let notesDir = path.join(writableDataDir, 'notes');
-let attachmentsDir = path.join(writableDataDir, 'attachments');
 let stateFile = path.join(writableDataDir, 'ui_state.json');
 let updateStateFile = path.join(writableDataDir, 'database_update_state.json');
-let importedNotesDir = path.join(writableDataDir, 'imported_notes');
 let pdfBookmarksFile = path.join(writableDataDir, 'pdf_bookmarks.json');
 
 function normalizeRelative(value) {
@@ -233,118 +231,14 @@ async function installDatabaseUpdate(manifest, sender) {
   } finally { await fs.rm(tempRoot, { recursive: true, force: true }); }
 }
 
-async function listImportedNotes() {
-  await ensureDataDirs();
-  const files = await fs.readdir(importedNotesDir);
-  const imported = await Promise.all(files.filter(file => file.endsWith('.json')).map(file => readJson(path.join(importedNotesDir, file), null)));
-  return imported.filter(Boolean).map(note => ({ ...note, imported: true, pinned: false })).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
-}
-
-async function deleteImportedNote(id) {
-  const safeId = safeNoteId(id);
-  const noteFile = path.join(importedNotesDir, `${safeId}.json`);
-  if (!(await fs.stat(noteFile).catch(() => null))?.isFile()) throw new Error('Імпортована нотатка більше не існує.');
-  await Promise.all([
-    fs.rm(noteFile, { force: true }),
-    fs.rm(path.join(attachmentsDir, safeId), { recursive: true, force: true }),
-  ]);
-  return true;
-}
-
-async function exportNotesLibrary(noteIds, libraryName, author) {
-  const chosenIds = [...new Set((noteIds || []).map(safeNoteId))];
-  if (!chosenIds.length) throw new Error('Виберіть хоча б одну нотатку.');
-  const available = new Map((await listNotes()).map(note => [note.id, note]));
-  const selected = chosenIds.map(id => available.get(id));
-  if (selected.some(note => !note)) throw new Error('Одна з вибраних нотаток більше не існує.');
-  const destination = await dialog.showOpenDialog({ title: 'Виберіть папку для пакета бібліотеки', properties: ['openDirectory', 'createDirectory'] });
-  if (destination.canceled || !destination.filePaths[0]) return { canceled: true };
-  const tempRoot = await fs.mkdtemp(path.join(writableDataDir, '.coda-notes-export-'));
-  const stage = path.join(tempRoot, 'library');
-  try {
-    await fs.mkdir(stage, { recursive: true });
-    const exportedNotes = [];
-    for (const note of selected) {
-      const exported = { ...note, author: String(author || '').trim() || 'Не вказано', pinned: false, attachments: [] };
-      for (const file of note.attachments || []) {
-        const source = resolveAttachment(file.path);
-        const relative = `attachments/${note.id}/${path.basename(source)}`;
-        const target = resolveInside(stage, relative);
-        await fs.mkdir(path.dirname(target), { recursive: true });
-        await fs.copyFile(source, target);
-        exported.attachments.push({ ...file, path: relative });
-      }
-      exportedNotes.push(exported);
-    }
-    const name = String(libraryName || '').trim() || 'Бібліотека нотаток';
-    await writeJson(path.join(stage, 'library.json'), { schemaVersion: 1, name, author: String(author || '').trim(), exportedAt: new Date().toISOString(), notes: exportedNotes });
-    const safeName = name.replace(/[<>:"/\\|?*]+/g, '-').replace(/\s+/g, ' ').slice(0, 80) || 'Нотатки-CoDA';
-    const packageName = `${safeName}.codanotes`;
-    const packagePath = path.join(destination.filePaths[0], packageName);
-    const temporaryZip = path.join(tempRoot, 'notes-package.zip');
-    await fs.rm(packagePath, { force: true });
-    const command = `Compress-Archive -Path '${path.join(stage, '*').replaceAll("'", "''")}' -DestinationPath '${temporaryZip.replaceAll("'", "''")}' -CompressionLevel Optimal -Force`;
-    await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, maxBuffer: 1024 * 1024 });
-    await fs.copyFile(temporaryZip, packagePath);
-    return { canceled: false, packagePath, count: exportedNotes.length, name };
-  } finally { await fs.rm(tempRoot, { recursive: true, force: true }); }
-}
-
-async function importNotesLibrary() {
-  const chosen = await dialog.showOpenDialog({ title: 'Імпортувати нотатки CoDA', properties: ['openFile'], filters: [{ name: 'Файл нотаток CoDA', extensions: ['codanotes'] }] });
-  if (chosen.canceled || !chosen.filePaths[0]) return { canceled: true };
-  const tempRoot = await fs.mkdtemp(path.join(writableDataDir, '.coda-notes-import-'));
-  const createdIds = [];
-  try {
-    const unpacked = path.join(tempRoot, 'library');
-    const archive = path.join(tempRoot, 'notes-package.zip');
-    await fs.copyFile(chosen.filePaths[0], archive);
-    await expandZip(archive, unpacked);
-    const library = await readJson(path.join(unpacked, 'library.json'), null);
-    if (library?.schemaVersion !== 1 || !Array.isArray(library.notes)) throw new Error('Файл не містить коректної бібліотеки нотаток CoDA.');
-    for (const sourceNote of library.notes) {
-      const id = crypto.randomUUID().replaceAll('-', '');
-      createdIds.push(id);
-      const attachments = [];
-      for (const file of sourceNote.attachments || []) {
-        const source = resolveInside(unpacked, file.path);
-        if (!(await fs.stat(source).catch(() => null))?.isFile()) throw new Error(`У пакеті відсутнє вкладення ${file.name || file.path}.`);
-        const folder = path.join(attachmentsDir, id);
-        await fs.mkdir(folder, { recursive: true });
-        const target = path.join(folder, `${crypto.randomUUID().slice(0, 8)}_${path.basename(source)}`);
-        await fs.copyFile(source, target);
-        attachments.push({ ...file, path: path.relative(writableDataDir, target) });
-      }
-      const note = { ...sourceNote, id, source_library: library.name || 'Імпортована бібліотека', source_author: sourceNote.author || library.author || '', imported: true, pinned: false, attachments };
-      await writeJson(path.join(importedNotesDir, `${id}.json`), note);
-    }
-    return { canceled: false, count: library.notes.length, name: library.name || 'Імпортована бібліотека' };
-  } catch (error) {
-    await Promise.all(createdIds.flatMap(id => [
-      fs.rm(path.join(importedNotesDir, `${id}.json`), { force: true }),
-      fs.rm(path.join(attachmentsDir, id), { recursive: true, force: true }),
-    ]));
-    throw error;
-  } finally { await fs.rm(tempRoot, { recursive: true, force: true }); }
-}
-
-async function promoteImportedNote(note) {
-  const id = safeNoteId(note.id);
-  const imported = await readJson(path.join(importedNotesDir, `${id}.json`), null);
-  if (!imported) throw new Error('Імпортована нотатка більше не існує.');
-  const saved = await saveNote({ ...imported, ...note, imported: false, pinned: false });
-  await fs.rm(path.join(importedNotesDir, `${id}.json`), { force: true });
-  return saved;
-}
-
-async function ensureDataDirs() { await Promise.all([fs.mkdir(notesDir, { recursive: true }), fs.mkdir(attachmentsDir, { recursive: true }), fs.mkdir(importedNotesDir, { recursive: true })]); }
+async function ensureDataDirs() { await fs.mkdir(writableDataDir, { recursive: true }); }
 async function readJson(file, fallback) { try { return JSON.parse(await fs.readFile(file, 'utf8')); } catch { return fallback; } }
 async function writeJson(file, value) { await fs.writeFile(file, JSON.stringify(value, null, 2), 'utf8'); }
 const USER_DATA_ARCHIVE_KIND = 'CoDA User Data';
 const USER_DATA_GROUPS = Object.freeze([
-  { id: 'activity', label: 'Закріплені, недавні та налаштування', description: 'Тема, закріплені й нещодавно відкриті ДБН та нотатки.', entries: ['ui_state.json'] },
-  { id: 'pdf-bookmarks', label: 'Закладки у PDF ДБН', description: 'Кольорові текстові закладки у документах ДБН.', entries: ['pdf_bookmarks.json'] },
-  { id: 'notes', label: 'Нотатки та вкладення', description: 'Мої й імпортовані нотатки разом із прикріпленими файлами.', entries: ['notes', 'imported_notes', 'attachments'] },
+  { id: 'activity', label: 'Закріплені, недавні та налаштування', description: 'Тема, закріплені й нещодавно відкриті ДБН.', entries: ['ui_state.json'] },
+  { id: 'pdf-bookmarks', label: 'Закладки у PDF', description: 'Кольорові текстові закладки у документах ДБН і Бібліотеки.', entries: ['pdf_bookmarks.json'] },
+  { id: 'library', label: 'Бібліотека документів', description: 'Завантажені ДСТУ, інші норми та їхні файли.', entries: ['document_library'] },
   { id: 'archicad', label: 'Проєкти Archicad / Excel', description: 'Локальні проєкти й створені Excel-файли.', entries: ['archicad_projects'] },
   { id: 'edessb', label: 'База документів ЄДЕССБ', description: 'Проєкти, посилання, редакції та окремо збережені PDF.', entries: ['edessb_projects', 'edessb_documents'] },
   { id: 'materials', label: 'База будівельних матеріалів', description: 'Єдиний Excel із базовими й користувацькими матеріалами та прикріпленими файлами.', entries: ['materials_database.xlsx', 'materials_attachments', 'user_materials.json'] },
@@ -528,27 +422,6 @@ async function deletePdfBookmark(payload) {
   await writeJson(pdfBookmarksFile, store);
   return true;
 }
-function safeNoteId(value) {
-  const id = String(value || '');
-  if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Некоректний ідентифікатор нотатки');
-  return id;
-}
-function resolveAttachment(relativePath) {
-  const target = path.resolve(writableDataDir, String(relativePath || ''));
-  const rootPath = `${path.resolve(attachmentsDir)}${path.sep}`;
-  if (!target.startsWith(rootPath)) throw new Error('Некоректний шлях до вкладення');
-  return target;
-}
-function resolveReadableAttachment(relativePath) {
-  const value = String(relativePath || '').replaceAll('\\', '/');
-  return resolveAttachment(value);
-}
-function attachmentMime(filePath) {
-  return ({
-    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif',
-    '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.pdf': 'application/pdf',
-  })[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
-}
 function readCatalogFromExcel() {
   const workbook = XLSX.readFile(path.join(catalogDataDir, 'dbn_catalog.xlsx'), { cellDates: false });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -597,22 +470,6 @@ function readUpdateHistory() {
     return true;
   });
 }
-async function listNotes() {
-  await ensureDataDirs();
-  const files = await fs.readdir(notesDir);
-  const notes = await Promise.all(files.filter(file => file.endsWith('.json')).map(file => readJson(path.join(notesDir, file), null)));
-  return notes.filter(Boolean).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updated_at.localeCompare(a.updated_at));
-}
-async function saveNote(note) {
-  await ensureDataDirs();
-  const now = new Date().toISOString();
-  const id = note.id || crypto.randomUUID().replaceAll('-', '');
-  const previous = await readJson(path.join(notesDir, `${id}.json`), {});
-  const saved = { id, title: note.title?.trim() || 'Без назви', body: note.body || '', messages: Array.isArray(note.messages) ? note.messages : [], attachments: note.attachments || [], pinned: Boolean(note.pinned), created_at: previous.created_at || now, updated_at: now };
-  await writeJson(path.join(notesDir, `${id}.json`), saved);
-  return saved;
-}
-
 async function resolveArchicadProjectConnection(projectId) {
   const project = await archicadProjects.getProject(writableDataDir, projectId);
   const connections = await archicad.getConnections();
@@ -674,11 +531,8 @@ function createWindow() {
 app.whenReady().then(async () => {
   if (app.isPackaged) {
     writableDataDir = app.getPath('userData');
-    notesDir = path.join(writableDataDir, 'notes');
-    attachmentsDir = path.join(writableDataDir, 'attachments');
     stateFile = path.join(writableDataDir, 'ui_state.json');
     updateStateFile = path.join(writableDataDir, 'database_update_state.json');
-    importedNotesDir = path.join(writableDataDir, 'imported_notes');
     pdfBookmarksFile = path.join(writableDataDir, 'pdf_bookmarks.json');
   }
   const installedDatabase = path.join(writableDataDir, 'dbn_database');
@@ -707,7 +561,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('program-update:check', checkProgramUpdate);
   ipcMain.handle('program-update:install', event => installProgramUpdate(event.sender));
   ipcMain.handle('app:version', () => app.getVersion());
-  ipcMain.handle('state:get', () => readJson(stateFile, { theme: 'light', pinned_dbn: [], recent_dbn: [], recent_notes: [] }));
+  ipcMain.handle('state:get', () => readJson(stateFile, { theme: 'light', pinned_dbn: [], recent_dbn: [] }));
   ipcMain.handle('state:set', (_event, state) => writeJson(stateFile, state));
   ipcMain.handle('user-data:groups', () => USER_DATA_GROUPS);
   ipcMain.handle('user-data:export', (_event, groupIds) => exportUserDataArchive(groupIds));
@@ -809,47 +663,29 @@ app.whenReady().then(async () => {
     const folder = materialsLibrary.attachmentsRoot(writableDataDir); await fs.mkdir(folder, { recursive: true });
     const error = await shell.openPath(folder); if (error) throw new Error(error); return true;
   });
-  ipcMain.handle('notes:list', listNotes);
-  ipcMain.handle('imported-notes:list', listImportedNotes);
-  ipcMain.handle('imported-notes:delete', (_event, id) => deleteImportedNote(id));
-  ipcMain.handle('notes:export', (_event, payload) => exportNotesLibrary(payload?.noteIds, payload?.libraryName, payload?.author));
-  ipcMain.handle('notes:import', importNotesLibrary);
-  ipcMain.handle('imported-notes:promote', (_event, note) => promoteImportedNote(note));
-  ipcMain.handle('notes:save', (_event, note) => saveNote(note));
-  ipcMain.handle('notes:delete', async (_event, id) => {
-    const safeId = safeNoteId(id);
-    await Promise.all([
-      fs.rm(path.join(notesDir, `${safeId}.json`), { force: true }),
-      fs.rm(path.join(attachmentsDir, safeId), { recursive: true, force: true }),
-    ]);
+  ipcMain.handle('library:config', () => documentLibrary.getConfig(writableDataDir));
+  ipcMain.handle('library:add-category', (_event, label) => documentLibrary.addCategory(writableDataDir, label));
+  ipcMain.handle('library:list', () => documentLibrary.listItems(writableDataDir));
+  ipcMain.handle('library:select-file', async () => {
+    const selected = await dialog.showOpenDialog({ title: 'Оберіть документ для Бібліотеки', properties: ['openFile'] });
+    if (selected.canceled || !selected.filePaths[0]) return { canceled: true };
+    return { canceled: false, sourcePath: selected.filePaths[0], name: path.basename(selected.filePaths[0]) };
   });
-  ipcMain.handle('attachments:add', async (_event, noteId) => {
-    await ensureDataDirs();
-    noteId = safeNoteId(noteId);
-    const result = await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'] });
-    if (result.canceled) return [];
-    const folder = path.join(attachmentsDir, noteId);
-    await fs.mkdir(folder, { recursive: true });
-    return Promise.all(result.filePaths.map(async source => {
-      const filename = path.basename(source);
-      const target = path.join(folder, `${crypto.randomUUID().slice(0, 8)}_${filename}`);
-      await fs.copyFile(source, target);
-      return { id: crypto.randomUUID(), name: filename, path: path.relative(writableDataDir, target), created_at: new Date().toISOString() };
-    }));
+  ipcMain.handle('library:add', (_event, payload) => documentLibrary.addItem(writableDataDir, payload));
+  ipcMain.handle('library:delete', (_event, itemId) => documentLibrary.deleteItem(writableDataDir, itemId));
+  ipcMain.handle('library:open', async (_event, itemId) => {
+    const { filePath } = await documentLibrary.getItemFile(writableDataDir, itemId);
+    const error = await shell.openPath(filePath); if (error) throw new Error(error); return true;
   });
-  ipcMain.handle('attachments:delete', async (_event, relativePath) => {
-    const target = resolveAttachment(relativePath);
-    await fs.rm(target, { force: true });
-    try {
-      const parent = path.dirname(target);
-      if ((await fs.readdir(parent)).length === 0) await fs.rmdir(parent);
-    } catch {}
+  ipcMain.handle('library:read-pdf', async (_event, itemId) => {
+    const { item, filePath } = await documentLibrary.getItemFile(writableDataDir, itemId);
+    if (!item.isPdf || path.extname(filePath).toLowerCase() !== '.pdf') throw new Error('Цей документ не є PDF-файлом.');
+    return fs.readFile(filePath);
   });
-  ipcMain.handle('attachments:read', async (_event, relativePath) => {
-    const target = resolveReadableAttachment(relativePath);
-    return { data: await fs.readFile(target), mime: attachmentMime(target) };
+  ipcMain.handle('library:open-folder', async () => {
+    const folder = documentLibrary.filesRoot(writableDataDir); await fs.mkdir(folder, { recursive: true });
+    const error = await shell.openPath(folder); if (error) throw new Error(error); return true;
   });
-  ipcMain.handle('file:open', (_event, relativePath) => shell.openPath(resolveReadableAttachment(relativePath)));
   ipcMain.handle('dbn:open', (_event, relativePath) => {
     if (!databaseRoot) throw new Error('База ДБН ще не встановлена.');
     return shell.openPath(path.join(databaseRoot, relativePath));
