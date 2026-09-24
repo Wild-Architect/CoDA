@@ -585,8 +585,17 @@ async function renderEdessbInstructions() {
   edessbInstructions.forEach(item => categoryCounts.set(categoryOf(item), (categoryCounts.get(categoryOf(item)) || 0) + 1));
   const categories = [...categoryCounts.keys()].sort((a, b) => a.localeCompare(b, 'uk'));
   if (selectedEdessbInstructionCategory && !categoryCounts.has(selectedEdessbInstructionCategory)) selectedEdessbInstructionCategory = null;
+  const favoriteInstructions = new Set(state.favorite_edessb_instructions || []);
+  const orderedInstructions = [...edessbInstructions].sort((a, b) => {
+    const favoriteDifference = Number(favoriteInstructions.has(b.filename)) - Number(favoriteInstructions.has(a.filename));
+    return favoriteDifference || a.order - b.order || a.title.localeCompare(b.title, 'uk');
+  });
   const categoryButtons = [`<button class="${selectedEdessbInstructionCategory ? '' : 'active'}" data-edessb-instruction-category-index="-1"><span>Усі категорії</span><strong>${edessbInstructions.length}</strong></button>`, ...categories.map((category, index) => `<button class="${selectedEdessbInstructionCategory === category ? 'active' : ''}" data-edessb-instruction-category-index="${index}" title="${escape(category)}"><span>${escape(category)}</span><strong>${categoryCounts.get(category)}</strong></button>`)].join('');
-  const rows = edessbInstructions.map(item => `<tr data-instruction-file="${escape(item.filename)}" data-category="${escape(categoryOf(item))}"><td>${escape(item.title)}</td><td>${escape(item.version || '—')}</td><td>${item.pages || '—'}</td></tr>`).join('');
+  const rows = orderedInstructions.map(item => {
+    const favorite = favoriteInstructions.has(item.filename);
+    const favoriteLabel = favorite ? 'Прибрати з обраних' : 'Додати до обраних';
+    return `<tr data-instruction-file="${escape(item.filename)}" data-category="${escape(categoryOf(item))}"><td><div class="edessb-instruction-title"><button type="button" class="edessb-instruction-favorite${favorite ? ' active' : ''}" data-favorite-instruction="${escape(item.filename)}" title="${favoriteLabel}" aria-label="${favoriteLabel}" aria-pressed="${favorite}">${icon('star')}</button><span>${escape(item.title)}</span></div></td><td>${escape(item.version || '—')}</td><td>${item.pages || '—'}</td></tr>`;
+  }).join('');
   page.innerHTML = head('Інструкції ЄДЕССБ') + `<div class="page-content dbn-page edessb-instructions-page"><button id="back-to-edessb" class="archicad-back">${icon('chevron-left')}<span>До ЄДЕССБ</span></button><h1 class="hero">Інструкції ЄДЕССБ</h1><p class="subtitle">Вбудований каталог • ${edessbInstructions.length} документів • оновлюється разом із CoDA</p><div class="dbn-layout"><section class="dbn-catalog"><table class="table edessb-instructions-table"><thead><tr><th>Найменування</th><th>Версія</th><th>Сторінок</th></tr></thead><tbody>${rows}</tbody></table></section><aside class="dbn-categories"><div class="dbn-categories-title">Категорії</div><div class="dbn-category-list">${categoryButtons}</div></aside></div><div class="dbn-floating-controls" role="search"><input id="edessb-instructions-search" class="input" value="${escape(edessbInstructionSearch)}" placeholder="Пошук за назвою інструкції"><button id="open-edessb-instruction" class="button primary edessb-instructions-open" disabled>${icon('book-open')}<span>Відкрити інструкцію</span></button></div></div>`;
   $('#back-to-edessb').onclick = () => navigate('edessb');
   let selectedRow = null;
@@ -598,6 +607,18 @@ async function renderEdessbInstructions() {
   document.querySelectorAll('.edessb-instructions-table tbody tr').forEach(row => {
     row.onclick = () => selectRow(row);
     row.ondblclick = () => openEdessbInstruction(edessbInstructions.find(item => item.filename === row.dataset.instructionFile));
+  });
+  document.querySelectorAll('[data-favorite-instruction]').forEach(button => {
+    button.onclick = async event => {
+      event.stopPropagation();
+      const filename = button.dataset.favoriteInstruction;
+      const favorites = new Set(state.favorite_edessb_instructions || []);
+      favorites.has(filename) ? favorites.delete(filename) : favorites.add(filename);
+      state.favorite_edessb_instructions = [...favorites];
+      await saveState();
+      await renderEdessbInstructions();
+    };
+    button.ondblclick = event => event.stopPropagation();
   });
   const applyFilters = () => {
     const query = edessbInstructionSearch.trim().toLocaleLowerCase('uk');

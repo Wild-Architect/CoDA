@@ -25,6 +25,45 @@
   background: color-mix(in srgb, var(--accent) 12%, var(--surface));
 }
 
+.edessb-instruction-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.edessb-instruction-title > span {
+  min-width: 0;
+}
+
+.edessb-instruction-favorite {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: -4px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.edessb-instruction-favorite:hover {
+  background: color-mix(in srgb, #e6ab28 14%, transparent);
+  color: #b77d00;
+}
+
+.edessb-instruction-favorite.active {
+  color: #e6ab28;
+}
+
+.edessb-instruction-favorite.active .icon {
+  fill: currentColor;
+}
+
 .edessb-instructions-open:disabled {
   opacity: .55;
   cursor: default;

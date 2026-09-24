@@ -237,7 +237,7 @@ async function readJson(file, fallback) { try { return JSON.parse(await fs.readF
 async function writeJson(file, value) { await fs.writeFile(file, JSON.stringify(value, null, 2), 'utf8'); }
 const USER_DATA_ARCHIVE_KIND = 'CoDA User Data';
 const USER_DATA_GROUPS = Object.freeze([
-  { id: 'activity', label: 'Закріплені, недавні та налаштування', description: 'Тема, закріплені й нещодавно відкриті ДБН.', entries: ['ui_state.json'] },
+  { id: 'activity', label: 'Обране, недавні та налаштування', description: 'Тема, закріплені й нещодавно відкриті ДБН та обрані інструкції ЄДЕССБ.', entries: ['ui_state.json'] },
   { id: 'pdf-bookmarks', label: 'Закладки у PDF', description: 'Кольорові текстові закладки у документах ДБН і Бібліотеки.', entries: ['pdf_bookmarks.json'] },
   { id: 'library', label: 'Бібліотека документів', description: 'Завантажені ДСТУ, інші норми та їхні файли.', entries: ['document_library'] },
   { id: 'archicad', label: 'Проєкти Archicad / Excel', description: 'Локальні проєкти й створені Excel-файли.', entries: ['archicad_projects'] },
@@ -562,7 +562,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('program-update:check', checkProgramUpdate);
   ipcMain.handle('program-update:install', event => installProgramUpdate(event.sender));
   ipcMain.handle('app:version', () => app.getVersion());
-  ipcMain.handle('state:get', () => readJson(stateFile, { theme: 'light', pinned_dbn: [], recent_dbn: [] }));
+  ipcMain.handle('state:get', () => readJson(stateFile, { theme: 'light', pinned_dbn: [], recent_dbn: [], favorite_edessb_instructions: [] }));
   ipcMain.handle('state:set', (_event, state) => writeJson(stateFile, state));
   ipcMain.handle('user-data:groups', () => USER_DATA_GROUPS);
   ipcMain.handle('user-data:export', (_event, groupIds) => exportUserDataArchive(groupIds));
