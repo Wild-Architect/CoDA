@@ -8,6 +8,9 @@ let pendingProgramUpdate = null;
 let selectedArchicadProjectId = null;
 let selectedEdessbProjectId = null;
 let edessbConfig = { portalLinks: [], documentTypes: [] };
+let edessbInstructions = [];
+let selectedEdessbInstructionCategory = null;
+let edessbInstructionSearch = '';
 let selectedMaterialCategory = 'all';
 let materialSearch = '';
 const expandedMaterialIds = new Set();
@@ -59,7 +62,8 @@ function renderSidebar() {
   document.documentElement.dataset.theme = state.theme || 'light';
   $('#settings-theme-label').textContent = state.theme === 'dark' ? 'Світла тема' : 'Темна тема';
   $('#settings-theme-icon').setAttribute('href', state.theme === 'dark' ? 'icons.svg#sun' : 'icons.svg#moon');
-  document.querySelectorAll('.primary-nav button').forEach(button => button.classList.toggle('active', button.dataset.page === currentPage));
+  const activePage = currentPage === 'edessb-instructions' ? 'edessb' : currentPage;
+  document.querySelectorAll('.primary-nav button').forEach(button => button.classList.toggle('active', button.dataset.page === activePage));
   const pinnedDbn = catalog.filter(item => (state.pinned_dbn || []).includes(item.path)).map(item => ({ label:`${item.number} — ${item.title}`, kind:'book-open', action: () => openDbn(item), unpin: async () => { state.pinned_dbn=(state.pinned_dbn||[]).filter(path=>path!==item.path); await saveState(); renderSidebar(); } }));
   const dbnMap = new Map(catalog.map(item => [item.path, item]));
   const recently = (state.recent_dbn || []).map(id => dbnMap.get(id)).filter(Boolean).map(item => ({label:item.number,kind:'book-open',action:()=>openDbn(item)}));
@@ -209,16 +213,19 @@ function rememberView(view) {
   updateHistoryButtons();
 }
 async function showHistoryView(view) {
-  if (view.type !== 'pdf') disposePdfViewer();
+  if (!['pdf', 'library-pdf', 'edessb-instruction-pdf'].includes(view.type)) disposePdfViewer();
   if (view.type === 'library-pdf') {
     const item = libraryItems.find(entry => entry.id === view.id);
     if (item) { currentPage = 'library'; await renderPdfViewer({ number: item.name, id: item.id, attachment: true, library: true }); }
+  } else if (view.type === 'edessb-instruction-pdf') {
+    const item = edessbInstructions.find(entry => entry.filename === view.id);
+    if (item) { currentPage = 'edessb-instructions'; await renderPdfViewer({ ...item, number: item.title, edessbInstruction: true }); }
   } else if (view.type === 'pdf') {
     const item = catalog.find(entry => entry.path === view.id);
     if (item) { currentPage = 'dbn'; await renderPdfViewer(item); }
   } else {
     currentPage = view.id;
-    const renderer = { dbn: renderDbn, library: renderLibrary, excel: renderExcel, edessb: renderEdessb, materials: renderMaterials }[view.id];
+    const renderer = { dbn: renderDbn, library: renderLibrary, excel: renderExcel, edessb: renderEdessb, 'edessb-instructions': renderEdessbInstructions, materials: renderMaterials }[view.id];
     if (renderer) await renderer();
   }
   renderSidebar(); updateHistoryButtons();
@@ -506,13 +513,13 @@ function setPdfScale(scale) {
 
 async function renderPdfViewer(item) {
   disposePdfViewer();
-  const documentId = item.library ? `library:${item.id}` : `dbn:${item.path}`;
+  const documentId = item.library ? `library:${item.id}` : item.edessbInstruction ? `edessb-instruction:${item.filename}` : `dbn:${item.path}`;
   activePdf = { item, documentId, document: null, defaultPageSize: null, pdfjs: null, pageNumber: 1, scale: 1.25, singleScale: 1.25, layout: 'single', rendered: new Set(), renderTasks: new Map(), textLayers: new Map(), pageTexts: new Map(), pageTextMaps: new Map(), pageSearchIndexes: new Map(), bookmarks: [], selection: null, nativeSelection: [], selectionFrame: 0, activeBookmarkId: '', searchMatches: [], searchIndex: -1, searchQuery: '', searchToken: 0, observer: null, rightAlt: false, zoomWheelLocked: false };
-  const backLabel = item.library ? 'До бібліотеки' : 'До каталогу';
+  const backLabel = item.library ? 'До бібліотеки' : item.edessbInstruction ? 'До інструкцій' : 'До каталогу';
   page.innerHTML = head(item.number) + `<div class="pdf-viewer"><div class="pdf-toolbar"><button id="pdf-back" class="button">${icon('chevron-left')}<span>${backLabel}</span></button><div class="pdf-search"><div class="pdf-search-box">${icon('search')}<input id="pdf-search-input" class="pdf-search-input" placeholder="Пошук у документі"></div><button id="pdf-search-submit" class="button primary">Пошук</button><span id="pdf-search-count" class="pdf-search-count"></span></div><div class="pdf-toolbar-group"><button id="pdf-prev" class="pdf-icon-button" title="Попередня сторінка">${icon('chevron-left')}</button><input id="pdf-page-number" class="pdf-page-input" type="number" min="1" value="1"><span id="pdf-page-count">/ —</span><button id="pdf-next" class="pdf-icon-button" title="Наступна сторінка">${icon('chevron-right')}</button></div><div class="pdf-layout-switch" aria-label="Режим відображення сторінок"><button id="pdf-layout-single" class="pdf-icon-button active" title="Одна сторінка" aria-pressed="true">${icon('page-single')}</button><button id="pdf-layout-spread" class="pdf-icon-button" title="Дві сторінки поруч" aria-pressed="false">${icon('pages-two')}</button></div><div class="pdf-toolbar-group"><button id="pdf-zoom-out" class="pdf-icon-button" title="Зменшити">${icon('minus')}</button><span id="pdf-zoom-value">125%</span><button id="pdf-zoom-in" class="pdf-icon-button" title="Збільшити">${icon('plus')}</button></div><button id="pdf-open-system" class="button">${icon('external-link')}<span>Відкрити окремо</span></button></div><div class="pdf-workspace"><div id="pdf-stage" class="pdf-stage"><div id="pdf-status" class="pdf-status">Завантаження документа…</div></div><aside class="pdf-bookmarks-panel"><div id="pdf-bookmarks-view" class="pdf-side-view"><div class="pdf-bookmarks-head">${icon('bookmark')}<span>Текстові закладки</span></div><div id="pdf-selection-editor" class="pdf-selection-editor" hidden><div id="pdf-selection-caption" class="pdf-selection-caption">Виділений текст</div><div id="pdf-selection-preview" class="pdf-selection-preview"></div><input id="pdf-bookmark-label" class="pdf-bookmark-label" maxlength="120" placeholder="Ключове слово"><div class="pdf-color-row"><button class="pdf-color active" data-color="yellow" title="Жовтий"></button><button class="pdf-color" data-color="green" title="Зелений"></button><button class="pdf-color" data-color="blue" title="Блакитний"></button><button class="pdf-color" data-color="pink" title="Рожевий"></button><button class="pdf-color" data-color="orange" title="Помаранчевий"></button></div><div class="pdf-selection-actions"><button id="pdf-bookmark-cancel" class="button">Скасувати</button><button id="pdf-bookmark-save" class="button primary">Зберегти</button></div></div><div id="pdf-bookmarks-list" class="pdf-bookmarks-list"></div></div><div id="pdf-search-view" class="pdf-side-view" hidden><div class="pdf-bookmarks-head">${icon('search')}<span>Результати пошуку</span></div><div id="pdf-search-summary" class="pdf-search-summary"></div><div id="pdf-search-results" class="pdf-search-results"></div><div class="pdf-search-footer"><button id="pdf-search-close" class="button">Закрити пошук</button></div></div></aside></div></div>`;
-  $('#pdf-back').onclick = () => item.library ? moveHistory(-1) : navigate('dbn');
-  $('#pdf-open-system').onclick = () => item.library ? window.ekp.openLibraryItem(item.id) : window.ekp.openDbn(item.path);
-  if(!item.library){const button=document.createElement('button');button.id='pdf-edessb';button.className='button pdf-edessb-link';button.disabled=!item.edessb_url;button.title=item.edessb_url?'Відкрити сторінку цього ДБН у ЄДЕССБ':'Для цього документа посилання ЄДЕССБ відсутнє';button.innerHTML=`${icon('external-link')}<span>ЄДЕССБ</span>`;$('#pdf-open-system').insertAdjacentElement('afterend',button);button.onclick=()=>{if(item.edessb_url)window.ekp.openExternal(item.edessb_url);};}
+  $('#pdf-back').onclick = () => item.library ? moveHistory(-1) : navigate(item.edessbInstruction ? 'edessb-instructions' : 'dbn');
+  $('#pdf-open-system').onclick = () => item.library ? window.ekp.openLibraryItem(item.id) : item.edessbInstruction ? window.ekp.openEdessbInstruction(item.filename) : window.ekp.openDbn(item.path);
+  if(!item.library&&!item.edessbInstruction){const button=document.createElement('button');button.id='pdf-edessb';button.className='button pdf-edessb-link';button.disabled=!item.edessb_url;button.title=item.edessb_url?'Відкрити сторінку цього ДБН у ЄДЕССБ':'Для цього документа посилання ЄДЕССБ відсутнє';button.innerHTML=`${icon('external-link')}<span>ЄДЕССБ</span>`;$('#pdf-open-system').insertAdjacentElement('afterend',button);button.onclick=()=>{if(item.edessb_url)window.ekp.openExternal(item.edessb_url);};}
   $('#pdf-prev').onclick = () => scrollToPdfPage(activePdf.pageNumber - 1);
   $('#pdf-next').onclick = () => scrollToPdfPage(activePdf.pageNumber + 1);
   $('#pdf-layout-single').onclick = () => setPdfLayout('single');
@@ -540,7 +547,7 @@ async function renderPdfViewer(item) {
     setTimeout(() => { if (activePdf) activePdf.zoomWheelLocked = false; }, 90);
   };
   try {
-    const [pdfjs, data] = await Promise.all([loadPdfJs(), item.library ? window.ekp.readLibraryPdf(item.id) : window.ekp.readPdf(item.path)]);
+    const [pdfjs, data] = await Promise.all([loadPdfJs(), item.library ? window.ekp.readLibraryPdf(item.id) : item.edessbInstruction ? window.ekp.readEdessbInstructionPdf(item.filename) : window.ekp.readPdf(item.path)]);
     activePdf.pdfjs = pdfjs;
     activePdf.document = await pdfjs.getDocument({ data: new Uint8Array(data) }).promise;
     const defaultPage=await activePdf.document.getPage(1),defaultViewport=defaultPage.getViewport({scale:1});activePdf.defaultPageSize={width:defaultViewport.width,height:defaultViewport.height};
@@ -557,6 +564,60 @@ async function renderPdfViewer(item) {
 }
 
 async function openDbn(item) { await recent('recent_dbn', item.path); currentPage = 'dbn'; rememberView({ type: 'pdf', id: item.path }); await renderPdfViewer(item); renderSidebar(); }
+async function openEdessbInstruction(item) {
+  if (!item) return;
+  currentPage = 'edessb-instructions';
+  rememberView({ type: 'edessb-instruction-pdf', id: item.filename });
+  await renderPdfViewer({ ...item, number: item.title, edessbInstruction: true });
+  renderSidebar();
+}
+async function renderEdessbInstructions() {
+  page.innerHTML = head('Інструкції ЄДЕССБ') + `<div class="page-content dbn-page edessb-instructions-page"><div class="edessb-loading">Завантаження каталогу інструкцій…</div></div>`;
+  try { edessbInstructions = await window.ekp.edessbInstructions(); }
+  catch (error) {
+    page.innerHTML = head('Інструкції ЄДЕССБ') + `<div class="page-content dbn-page edessb-instructions-page"><div class="edessb-empty">${icon('info')}<h2>Не вдалося прочитати каталог</h2><p>${escape(readableError(error))}</p><button id="back-to-edessb" class="button">${icon('chevron-left')}<span>Повернутися до ЄДЕССБ</span></button></div></div>`;
+    $('#back-to-edessb').onclick = () => navigate('edessb');
+    return;
+  }
+  if (currentPage !== 'edessb-instructions') return;
+  const categoryOf = item => String(item.category || '').trim() || 'Без категорії';
+  const categoryCounts = new Map();
+  edessbInstructions.forEach(item => categoryCounts.set(categoryOf(item), (categoryCounts.get(categoryOf(item)) || 0) + 1));
+  const categories = [...categoryCounts.keys()].sort((a, b) => a.localeCompare(b, 'uk'));
+  if (selectedEdessbInstructionCategory && !categoryCounts.has(selectedEdessbInstructionCategory)) selectedEdessbInstructionCategory = null;
+  const categoryButtons = [`<button class="${selectedEdessbInstructionCategory ? '' : 'active'}" data-edessb-instruction-category-index="-1"><span>Усі категорії</span><strong>${edessbInstructions.length}</strong></button>`, ...categories.map((category, index) => `<button class="${selectedEdessbInstructionCategory === category ? 'active' : ''}" data-edessb-instruction-category-index="${index}" title="${escape(category)}"><span>${escape(category)}</span><strong>${categoryCounts.get(category)}</strong></button>`)].join('');
+  const rows = edessbInstructions.map(item => `<tr data-instruction-file="${escape(item.filename)}" data-category="${escape(categoryOf(item))}"><td>${escape(item.title)}</td><td>${escape(item.version || '—')}</td><td>${item.pages || '—'}</td></tr>`).join('');
+  page.innerHTML = head('Інструкції ЄДЕССБ') + `<div class="page-content dbn-page edessb-instructions-page"><button id="back-to-edessb" class="archicad-back">${icon('chevron-left')}<span>До ЄДЕССБ</span></button><h1 class="hero">Інструкції ЄДЕССБ</h1><p class="subtitle">Вбудований каталог • ${edessbInstructions.length} документів • оновлюється разом із CoDA</p><div class="dbn-layout"><section class="dbn-catalog"><table class="table edessb-instructions-table"><thead><tr><th>Найменування</th><th>Версія</th><th>Сторінок</th></tr></thead><tbody>${rows}</tbody></table></section><aside class="dbn-categories"><div class="dbn-categories-title">Категорії</div><div class="dbn-category-list">${categoryButtons}</div></aside></div><div class="dbn-floating-controls" role="search"><input id="edessb-instructions-search" class="input" value="${escape(edessbInstructionSearch)}" placeholder="Пошук за назвою інструкції"><button id="open-edessb-instruction" class="button primary edessb-instructions-open" disabled>${icon('book-open')}<span>Відкрити інструкцію</span></button></div></div>`;
+  $('#back-to-edessb').onclick = () => navigate('edessb');
+  let selectedRow = null;
+  const selectRow = row => {
+    document.querySelectorAll('.edessb-instructions-table tbody tr').forEach(item => item.classList.toggle('selected', item === row));
+    selectedRow = row;
+    $('#open-edessb-instruction').disabled = !row;
+  };
+  document.querySelectorAll('.edessb-instructions-table tbody tr').forEach(row => {
+    row.onclick = () => selectRow(row);
+    row.ondblclick = () => openEdessbInstruction(edessbInstructions.find(item => item.filename === row.dataset.instructionFile));
+  });
+  const applyFilters = () => {
+    const query = edessbInstructionSearch.trim().toLocaleLowerCase('uk');
+    document.querySelectorAll('.edessb-instructions-table tbody tr').forEach(row => {
+      const searchMatches = !query || row.innerText.toLocaleLowerCase('uk').includes(query);
+      const categoryMatches = !selectedEdessbInstructionCategory || row.dataset.category === selectedEdessbInstructionCategory;
+      row.hidden = !(searchMatches && categoryMatches);
+      if (row.hidden && row === selectedRow) selectRow(null);
+    });
+  };
+  $('#edessb-instructions-search').oninput = event => { edessbInstructionSearch = event.target.value; applyFilters(); };
+  document.querySelectorAll('[data-edessb-instruction-category-index]').forEach(button => button.onclick = () => {
+    const index = Number(button.dataset.edessbInstructionCategoryIndex);
+    selectedEdessbInstructionCategory = index < 0 ? null : categories[index];
+    document.querySelectorAll('[data-edessb-instruction-category-index]').forEach(item => item.classList.toggle('active', item === button));
+    applyFilters();
+  });
+  $('#open-edessb-instruction').onclick = () => selectedRow && openEdessbInstruction(edessbInstructions.find(item => item.filename === selectedRow.dataset.instructionFile));
+  applyFilters();
+}
 function libraryFileSize(value) {
   const bytes=Number(value)||0;
   if(bytes<1024)return `${bytes} Б`;
@@ -708,7 +769,7 @@ async function renderExcel(){
   document.querySelectorAll('[data-ac-import]').forEach(button=>button.onclick=async()=>{if(!await confirmArchicadImport(selected))return;button.disabled=true;button.innerHTML=`${icon('refresh-cw','spinning')}<span>Імпорт…</span>`;try{const result=await window.ekp.importArchicadProject({projectId:selected.id,fileId:button.dataset.acImport});const layerWarning=result.layerChangesSkipped?`\n\n${result.layerChangesSkipped} змін слоя не застосовано: офіційний JSON API Archicad надає назву слоя лише для читання.`:'';showArchicadMessage('Імпорт завершено',`Оновлено ID: ${result.elementIdsUpdated}. Оновлено класифікацій: ${result.classificationsUpdated}. Без змін: ${result.unchanged}.${layerWarning}`);}catch(error){showArchicadMessage('Не вдалося імпортувати зміни',error?.message||String(error));}finally{button.disabled=false;button.innerHTML=`${icon('upload')}<span>Імпортувати в Archicad</span>`;}});
 }
 function edessbPortalSection() {
-  return `<section class="edessb-portal"><div class="edessb-section-heading"><div><h1 class="hero">ЄДЕССБ</h1><p class="subtitle">Швидкий перехід до основних розділів Єдиної державної електронної системи у сфері будівництва</p></div></div><div class="edessb-portal-grid">${edessbConfig.portalLinks.map(link=>`<button class="edessb-portal-link" data-edessb-portal="${escape(link.url)}">${icon('external-link')}<span>${escape(link.label)}</span></button>`).join('')}</div><div class="edessb-privacy">${icon('shield')}<p>CoDA не збирає і не передає жодної інформації, яка була введена в браузері і не має жодного доступу до нього.</p></div></section>`;
+  return `<section class="edessb-portal"><div class="edessb-section-heading"><div><h1 class="hero">ЄДЕССБ</h1><p class="subtitle">Швидкий перехід до основних розділів Єдиної державної електронної системи у сфері будівництва</p></div><button id="open-edessb-instructions" class="button primary">${icon('book-open')}<span>Інструкція</span></button></div><div class="edessb-portal-grid">${edessbConfig.portalLinks.map(link=>`<button class="edessb-portal-link" data-edessb-portal="${escape(link.url)}">${icon('external-link')}<span>${escape(link.label)}</span></button>`).join('')}</div><div class="edessb-privacy">${icon('shield')}<p>CoDA не збирає і не передає жодної інформації, яка була введена в браузері і не має жодного доступу до нього.</p></div></section>`;
 }
 function requestEdessbProject() {
   return new Promise(resolve=>{
@@ -746,6 +807,7 @@ function requestEdessbRevision(typeId, revisionNumber, existing = null) {
 }
 function bindEdessbPortalLinks() {
   document.querySelectorAll('[data-edessb-portal]').forEach(button=>button.onclick=()=>window.ekp.openExternal(button.dataset.edessbPortal));
+  $('#open-edessb-instructions').onclick=()=>navigate('edessb-instructions');
 }
 async function renderEdessb() {
   page.innerHTML=head('ЄДЕССБ')+`<div class="page-content edessb-page"><div class="edessb-loading">Завантаження проєктів…</div></div>`;

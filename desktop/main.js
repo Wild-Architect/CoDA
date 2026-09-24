@@ -10,6 +10,7 @@ const { autoUpdater } = require('electron-updater');
 const archicad = require('./archicad-service');
 const archicadProjects = require('./archicad-projects');
 const edessbProjects = require('./edessb-projects');
+const edessbInstructions = require('./edessb-instructions');
 const materialsLibrary = require('./materials-library');
 const documentLibrary = require('./document-library');
 
@@ -620,6 +621,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('archicad-projects:delete', (_event, projectId) => archicadProjects.deleteProject(writableDataDir, projectId));
   ipcMain.handle('archicad-projects:delete-file', (_event, payload) => archicadProjects.deleteProjectFile(writableDataDir, payload?.projectId, payload?.fileId));
   ipcMain.handle('edessb:config', () => ({ portalLinks: edessbProjects.PORTAL_LINKS, documentTypes: edessbProjects.DOCUMENT_TYPES }));
+  ipcMain.handle('edessb-instructions:list', () => edessbInstructions.list(resourcesRoot));
+  ipcMain.handle('edessb-instructions:read-pdf', (_event, filename) => edessbInstructions.readPdf(resourcesRoot, filename));
+  ipcMain.handle('edessb-instructions:open', async (_event, filename) => {
+    const target = edessbInstructions.pdfPath(resourcesRoot, filename);
+    if (!(await fs.stat(target).catch(() => null))?.isFile()) throw new Error('PDF-інструкцію ЄДЕССБ не знайдено.');
+    const error = await shell.openPath(target); if (error) throw new Error(error); return true;
+  });
   ipcMain.handle('edessb-projects:list', () => edessbProjects.listProjects(writableDataDir));
   ipcMain.handle('edessb-projects:create', (_event, payload) => edessbProjects.createProject(writableDataDir, payload));
   ipcMain.handle('edessb-projects:delete', (_event, projectId) => edessbProjects.deleteProject(writableDataDir, projectId));

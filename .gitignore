@@ -6,6 +6,7 @@ node_modules/
 dist/
 outputs/
 .tmp_*/
+.codex-tmp/
 __pycache__/
 *.py[cod]
 data/notes/
@@ -26,5 +27,6 @@ data/dbn_database/
 !data/dbn_catalog.xlsx
 !data/update_history.xlsx
 !data/materials_database.xlsx
+!data/edessb_instructions_catalog.xlsx
 !data/materials_attachments/
 !data/materials_attachments/**

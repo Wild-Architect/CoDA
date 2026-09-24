@@ -1,0 +1,44 @@
+.edessb-instructions-page .archicad-back { margin-bottom: 20px; }
+
+.edessb-instructions-table th:nth-child(1),
+.edessb-instructions-table td:nth-child(1) {
+  width: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.edessb-instructions-table th:nth-child(2),
+.edessb-instructions-table td:nth-child(2) {
+  width: 94px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.edessb-instructions-table th:nth-child(3),
+.edessb-instructions-table td:nth-child(3) {
+  width: 88px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.edessb-instructions-table tbody tr.selected {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
+.edessb-instructions-open:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.dbn-floating-controls .edessb-instructions-open,
+[data-theme="dark"] .dbn-floating-controls .edessb-instructions-open {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.dbn-floating-controls .edessb-instructions-open:hover:not(:disabled),
+[data-theme="dark"] .dbn-floating-controls .edessb-instructions-open:hover:not(:disabled) {
+  border-color: #1677c8;
+  background: #1677c8;
+}
