@@ -47,16 +47,60 @@ function normalizeProject(metadata) {
   }
   return { ...metadata, schemaVersion: 2, identifier: String(metadata.identifier || ''), documents };
 }
-async function getProject(dataDir, id) { const folder = projectDir(dataDir, id), metadata = normalizeProject(await readJson(path.join(folder, 'project.json'))); if (!metadata) throw new Error('Проєкт ЄДЕССБ не знайдено.'); return { folder, metadata }; }
-function projectDocumentsDir(dataDir, identifier) { return path.join(documentsRoot(dataDir), safeIdentifier(identifier)); }
+async function getProject(dataDir, id) { const folder = projectDir(dataDir, id), metadata = normalizeProject(await readJson(path.join(folder, 'project.json'))); if (!metadata) throw new Error('Проєкт ЄДЕССБ не знайдено.'); await ensureDocumentsFolder(dataDir, metadata); return { folder, metadata }; }
+function projectDocumentsDir(dataDir, identifier, title) {
+  const suffix = cleanText(title, 160).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '') || 'Проєкт';
+  return path.join(documentsRoot(dataDir), safeIdentifier(identifier) + '_' + suffix);
+}
+async function exists(file) {
+  return fs.stat(file).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
+}
+async function ensureDocumentsFolder(dataDir, metadata) {
+  const target = projectDocumentsDir(dataDir, metadata.identifier, metadata.title);
+  const legacy = path.join(documentsRoot(dataDir), safeIdentifier(metadata.identifier));
+  if (await exists(legacy)) {
+    if (await exists(target)) throw new Error('Існують дві папки PDF цього проєкту. Перевірте їх перед перейменуванням.');
+    await fs.rename(legacy, target);
+  }
+  await fs.mkdir(target, { recursive: true });
+  return target;
+}
+async function getDocumentsFolder(dataDir, identifier) {
+  if (!identifier) return documentsRoot(dataDir);
+  const project = (await listProjects(dataDir)).find(item => item.identifier === safeIdentifier(identifier));
+  if (!project) throw new Error('Проєкт ЄДЕССБ не знайдено.');
+  return projectDocumentsDir(dataDir, project.identifier, project.title);
+}
+async function renameProject(dataDir, id, requestedTitle) {
+  const title = cleanText(requestedTitle, 160);
+  if (!title) throw new Error('Вкажіть назву проєкту.');
+  const project = await getProject(dataDir, id);
+  const oldFolder = projectDocumentsDir(dataDir, project.metadata.identifier, project.metadata.title);
+  const newFolder = projectDocumentsDir(dataDir, project.metadata.identifier, title);
+  const moved = oldFolder !== newFolder;
+  if (moved) {
+    if (oldFolder.toLowerCase() !== newFolder.toLowerCase() && await exists(newFolder)) throw new Error('Папка з такою назвою вже існує. Оберіть іншу назву проєкту.');
+    await fs.rename(oldFolder, newFolder);
+  }
+  const metadata = { ...project.metadata, title, updatedAt: new Date().toISOString() };
+  const staged = path.join(project.folder, crypto.randomUUID() + '.rename.json');
+  try {
+    await writeJson(staged, metadata);
+    await fs.rename(staged, path.join(project.folder, 'project.json'));
+  } catch (error) {
+    if (moved) await fs.rename(newFolder, oldFolder);
+    throw error;
+  } finally { await fs.rm(staged, { force: true }); }
+  return metadata;
+}
 async function migrateLegacyFiles(dataDir, project) {
   if (!project.metadata.identifier) return;
   let changed = project.metadata.schemaVersion !== 2;
   for (const document of project.metadata.documents) for (const revision of document.revisions) {
     if (!revision.storedName) continue;
-    const targetName = `${project.metadata.identifier}-${document.short}${revision.number}.pdf`, target = path.join(projectDocumentsDir(dataDir, project.metadata.identifier), targetName);
+    const targetName = `${project.metadata.identifier}-${document.short}${revision.number}.pdf`, target = path.join(projectDocumentsDir(dataDir, project.metadata.identifier, project.metadata.title), targetName);
     if (revision.storedName === targetName && (await fs.stat(target).catch(() => null))?.isFile()) continue;
-    const candidates = [path.join(project.folder, 'documents', path.basename(revision.storedName)), path.join(projectDocumentsDir(dataDir, project.metadata.identifier), path.basename(revision.storedName))];
+    const candidates = [path.join(project.folder, 'documents', path.basename(revision.storedName)), path.join(projectDocumentsDir(dataDir, project.metadata.identifier, project.metadata.title), path.basename(revision.storedName))];
     let source = null; for (const candidate of candidates) if ((await fs.stat(candidate).catch(() => null))?.isFile()) { source = candidate; break; }
     if (source) { await fs.mkdir(path.dirname(target), { recursive: true }); await fs.copyFile(source, target); revision.storedName = targetName; changed = true; }
   }
@@ -70,18 +114,19 @@ async function listProjects(dataDir) {
   const used = new Set(loaded.map(project => project.metadata.identifier).filter(value => /^\d+$/.test(value))); let nextIdentifier = 1;
   for (const project of loaded.filter(item => !/^\d+$/.test(item.metadata.identifier))) { while (used.has(String(nextIdentifier))) nextIdentifier += 1; project.metadata.identifier = String(nextIdentifier); used.add(String(nextIdentifier)); await writeJson(path.join(project.folder, 'project.json'), project.metadata); }
   const projects = await Promise.all(loaded.map(async project => {
+    await ensureDocumentsFolder(dataDir, project.metadata);
     await migrateLegacyFiles(dataDir, project);
-    const documents = await Promise.all(project.metadata.documents.map(async document => ({ ...document, revisions: await Promise.all(document.revisions.map(async revision => ({ ...revision, fileExists: Boolean(revision.storedName && (await fs.stat(path.join(projectDocumentsDir(dataDir, project.metadata.identifier), revision.storedName)).catch(() => null))?.isFile()) }))) })));
+    const documents = await Promise.all(project.metadata.documents.map(async document => ({ ...document, revisions: await Promise.all(document.revisions.map(async revision => ({ ...revision, fileExists: Boolean(revision.storedName && (await fs.stat(path.join(projectDocumentsDir(dataDir, project.metadata.identifier, project.metadata.title), revision.storedName)).catch(() => null))?.isFile()) }))) })));
     return { ...project.metadata, documents };
   }));
-  return projects.filter(Boolean).sort((a, b) => Number(a.identifier || Number.MAX_SAFE_INTEGER) - Number(b.identifier || Number.MAX_SAFE_INTEGER) || String(a.identifier).localeCompare(String(b.identifier), 'uk', { numeric: true }) || a.title.localeCompare(b.title, 'uk'));
+  return projects.filter(Boolean).sort((a, b) => String(b.identifier).length - String(a.identifier).length || String(b.identifier).localeCompare(String(a.identifier), 'en') || a.title.localeCompare(b.title, 'uk'));
 }
 async function createProject(dataDir, payload) {
   const title = cleanText(payload?.title, 160), organization = cleanText(payload?.organization, 200), identifier = safeIdentifier(payload?.identifier);
   if (!title) throw new Error('Вкажіть назву проєкту.'); if (!organization) throw new Error('Вкажіть проєктну організацію.');
   if ((await listProjects(dataDir)).some(project => project.identifier === identifier)) throw new Error(`Проєкт з ідентифікаційним номером ${identifier} вже існує.`);
   const id = crypto.randomUUID().replaceAll('-', ''), now = new Date().toISOString(), metadata = { schemaVersion: 2, id, identifier, title, organization, createdAt: now, updatedAt: now, documents: [] };
-  await Promise.all([writeJson(path.join(projectDir(dataDir, id), 'project.json'), metadata), fs.mkdir(projectDocumentsDir(dataDir, identifier), { recursive: true })]); return metadata;
+  await Promise.all([writeJson(path.join(projectDir(dataDir, id), 'project.json'), metadata), fs.mkdir(projectDocumentsDir(dataDir, identifier, title), { recursive: true })]); return metadata;
 }
 async function validatePdf(sourcePath) {
   if (!sourcePath) return '';
@@ -92,7 +137,7 @@ async function addRevision(dataDir, projectId, payload) {
   const project = await getProject(dataDir, projectId), type = safeDocumentType(payload?.type), url = normalizeDocumentUrl(payload?.url), source = await validatePdf(payload?.sourcePath);
   if (!url && !source) throw new Error('Додайте посилання, PDF-файл або обидва.');
   const group = project.metadata.documents.find(item => item.type === type.id), number = Math.max(0, ...(group?.revisions || []).map(item => Number(item.number) || 0)) + 1;
-  const storedName = source ? `${project.metadata.identifier}-${type.short}${number}.pdf` : '', target = storedName ? path.join(projectDocumentsDir(dataDir, project.metadata.identifier), storedName) : '';
+  const storedName = source ? `${project.metadata.identifier}-${type.short}${number}.pdf` : '', target = storedName ? path.join(projectDocumentsDir(dataDir, project.metadata.identifier, project.metadata.title), storedName) : '';
   if (source) { await fs.mkdir(path.dirname(target), { recursive: true }); await fs.copyFile(source, target); }
   const now = new Date().toISOString(), revision = { number, url, originalName: source ? path.basename(source) : '', storedName, createdAt: now, updatedAt: now };
   const document = group ? { ...group, revisions: [...group.revisions, revision] } : { type: type.id, label: type.label, short: type.short, revisions: [revision] };
@@ -105,7 +150,7 @@ async function updateRevision(dataDir, projectId, payload) {
   const url = normalizeDocumentUrl(payload?.url), source = await validatePdf(payload?.sourcePath), removePdf = Boolean(payload?.removePdf);
   const keepExistingPdf = Boolean(existing.storedName && !removePdf && !source);
   if (!url && !source && !keepExistingPdf) throw new Error('Додайте посилання, PDF-файл або обидва.');
-  const documentDir = projectDocumentsDir(dataDir, project.metadata.identifier), storedName = source || keepExistingPdf ? `${project.metadata.identifier}-${type.short}${revisionNumber}.pdf` : '', target = storedName ? path.join(documentDir, storedName) : '';
+  const documentDir = projectDocumentsDir(dataDir, project.metadata.identifier, project.metadata.title), storedName = source || keepExistingPdf ? `${project.metadata.identifier}-${type.short}${revisionNumber}.pdf` : '', target = storedName ? path.join(documentDir, storedName) : '';
   const oldTarget = existing.storedName ? path.join(documentDir, path.basename(existing.storedName)) : '';
   const backup = oldTarget && (source || removePdf) && (await fs.stat(oldTarget).catch(() => null))?.isFile() ? path.join(documentDir, `.${crypto.randomUUID()}.backup.pdf`) : '';
   const staged = source ? path.join(documentDir, `.${crypto.randomUUID()}.staged.pdf`) : '';
@@ -131,17 +176,17 @@ async function updateRevision(dataDir, projectId, payload) {
 async function getRevision(dataDir, projectId, typeId, number) {
   const project = await getProject(dataDir, projectId), type = safeDocumentType(typeId), revision = project.metadata.documents.find(item => item.type === type.id)?.revisions.find(item => item.number === Number(number));
   if (!revision) throw new Error('Редакцію документа не знайдено.'); if (!revision.storedName) throw new Error('Для цієї редакції PDF-файл не додано.');
-  const filePath = path.join(projectDocumentsDir(dataDir, project.metadata.identifier), path.basename(revision.storedName)); if (!(await fs.stat(filePath).catch(() => null))?.isFile()) throw new Error('PDF-файл редакції відсутній.'); return { revision, filePath };
+  const filePath = path.join(projectDocumentsDir(dataDir, project.metadata.identifier, project.metadata.title), path.basename(revision.storedName)); if (!(await fs.stat(filePath).catch(() => null))?.isFile()) throw new Error('PDF-файл редакції відсутній.'); return { revision, filePath };
 }
 async function deleteRevision(dataDir, projectId, typeId, number) {
   const project = await getProject(dataDir, projectId), type = safeDocumentType(typeId), revisionNumber = Number(number), group = project.metadata.documents.find(item => item.type === type.id), revision = group?.revisions.find(item => item.number === revisionNumber); if (!revision) return true;
-  if (revision.storedName) await fs.rm(path.join(projectDocumentsDir(dataDir, project.metadata.identifier), path.basename(revision.storedName)), { force: true });
+  if (revision.storedName) await fs.rm(path.join(projectDocumentsDir(dataDir, project.metadata.identifier, project.metadata.title), path.basename(revision.storedName)), { force: true });
   const revisions = group.revisions.filter(item => item.number !== revisionNumber), documents = revisions.length ? [...project.metadata.documents.filter(item => item.type !== type.id), { ...group, revisions }] : project.metadata.documents.filter(item => item.type !== type.id);
   await writeJson(path.join(project.folder, 'project.json'), { ...project.metadata, updatedAt: new Date().toISOString(), documents }); return true;
 }
 async function deleteProject(dataDir, id) {
   const project = await getProject(dataDir, id), root = `${path.resolve(projectsRoot(dataDir))}${path.sep}`; if (!path.resolve(project.folder).startsWith(root)) throw new Error('Небезпечний шлях до проєкту ЄДЕССБ.');
-  await Promise.all([fs.rm(project.folder, { recursive: true, force: true }), project.metadata.identifier ? fs.rm(projectDocumentsDir(dataDir, project.metadata.identifier), { recursive: true, force: true }) : Promise.resolve()]); return true;
+  await Promise.all([fs.rm(project.folder, { recursive: true, force: true }), project.metadata.identifier ? fs.rm(projectDocumentsDir(dataDir, project.metadata.identifier, project.metadata.title), { recursive: true, force: true }) : Promise.resolve()]); return true;
 }
 
-module.exports = { DOCUMENT_TYPES, PORTAL_LINKS, addRevision, createProject, deleteProject, deleteRevision, documentsRoot, getRevision, listProjects, updateRevision };
+module.exports = { DOCUMENT_TYPES, PORTAL_LINKS, addRevision, createProject, deleteProject, deleteRevision, documentsRoot, getDocumentsFolder, renameProject, getRevision, listProjects, updateRevision };

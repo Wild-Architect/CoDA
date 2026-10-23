@@ -630,6 +630,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('edessb-projects:list', () => edessbProjects.listProjects(writableDataDir));
   ipcMain.handle('edessb-projects:create', (_event, payload) => edessbProjects.createProject(writableDataDir, payload));
+  ipcMain.handle('edessb-projects:rename', (_event, payload) => edessbProjects.renameProject(writableDataDir, payload?.projectId, payload?.title));
   ipcMain.handle('edessb-projects:delete', (_event, projectId) => edessbProjects.deleteProject(writableDataDir, projectId));
   ipcMain.handle('edessb-projects:select-pdf', async () => {
     const selected = await dialog.showOpenDialog({ title: 'Оберіть PDF-документ ЄДЕССБ', properties: ['openFile'], filters: [{ name: 'PDF-документ', extensions: ['pdf'] }] });
@@ -647,7 +648,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('edessb-projects:delete-revision', (_event, payload) => edessbProjects.deleteRevision(writableDataDir, payload?.projectId, payload?.type, payload?.number));
   ipcMain.handle('edessb-projects:open-documents-folder', async (_event, identifier) => {
     if (identifier && !/^\d+$/.test(String(identifier))) throw new Error('Некоректний ідентифікаційний номер проєкту.');
-    const folder = identifier ? path.join(edessbProjects.documentsRoot(writableDataDir), String(identifier)) : edessbProjects.documentsRoot(writableDataDir);
+    const folder = await edessbProjects.getDocumentsFolder(writableDataDir, identifier);
     await fs.mkdir(folder, { recursive: true }); const error = await shell.openPath(folder); if (error) throw new Error(error); return true;
   });
   ipcMain.handle('materials:list', () => materialsLibrary.listLibrary(resourcesRoot, writableDataDir, !app.isPackaged));
